@@ -24,8 +24,8 @@ app.post('/api/login', (req, res) => {
   if (!user) {
     return res.status(401).json({ error: 'Credenciales inválidas' });
   }
-  // Generar token
-  const token = jwt.sign({ usuario: user.usuario }, JWT_SECRET, { expiresIn: '8h' });
+  // Generar token (expira en 3 horas)
+  const token = jwt.sign({ usuario: user.usuario }, JWT_SECRET, { expiresIn: '3h' });
   res.json({ token });
 });
 
