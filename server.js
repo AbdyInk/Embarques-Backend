@@ -59,6 +59,37 @@ app.get('/api/protegido', autenticarJWT, (req, res) => {
 // Historial de escaneos por anden (máximo 30 por anden)
 const historialEscaneos = {};
 
+// Historial global de movimientos (escaneos y cambios de status)
+let historialMovimientos = [
+  // 7 escaneos
+  ...Array.from({length: 7}, (_, i) => ({
+    fechaHora: Date.now() - 1000 * 60 * (20 - i),
+    anden: (i % 6) + 1,
+    tipo: 'escaneo',
+    codigo: `CP-TEST${i+1}`,
+    usuario: 'admin',
+    info: `Escaneo de pallet de prueba ${i+1}`
+  })),
+  // 7 cambios de status
+  ...Array.from({length: 7}, (_, i) => ({
+    fechaHora: Date.now() - 1000 * 60 * (13 - i),
+    anden: ((i+2) % 6) + 1,
+    tipo: 'status',
+    codigo: ['Completado','Cargando','En espera','Documentado','Embarcado','Disponible','Limite'][i % 7],
+    usuario: 'admin',
+    info: `Cambio de status de prueba ${i+1}`
+  })),
+  // 6 cambios en anden
+  ...Array.from({length: 6}, (_, i) => ({
+    fechaHora: Date.now() - 1000 * 60 * (6 - i),
+    anden: ((i+3) % 6) + 1,
+    tipo: 'cambio',
+    codigo: `Campo${i+1}`,
+    usuario: 'admin',
+    info: `Cambio en campo del andén de prueba ${i+1}`
+  }))
+];
+
 // Almacenamiento en memoria de pallets por anden
 let andenes = [
   {
@@ -70,7 +101,7 @@ let andenes = [
       codigoPallet: `CP-${i+200}`,
       timestamp: Date.now() - 1000 * 60 * (28 - i)
     })),
-    numeroCajas: 15,
+    numeroCajas: 16,
     cantidad: 28,
     limiteCamion: 28,
     status: 'Completado',
@@ -108,7 +139,7 @@ let andenes = [
     ultimaFechaEscaneo: Date.now() - 1000 * 60 * 3,
     fechaEmbarque: Date.now() - 1000 * 60 * 3
   },
-  { id: 4, pallets: [], numeroCajas: 0, cantidad: 0, status: 'En espera', destino: '', ultimaFechaEscaneo: null },
+  { id: 4, pallets: [], numeroCajas: 6, cantidad: 0, limiteCamion: 32, status: 'En espera', destino: 'Mc Allen', ultimaFechaEscaneo: null },
   {
     id: 5,
     pallets: [
@@ -138,100 +169,159 @@ let andenes = [
   }
 ];
 
-// Endpoint para recibir datos de DataWedge
-// Endpoint para actualizar destino y numeroCajas de cada andén
-app.post('/api/andenes/update', (req, res) => {
-  const { updates } = req.body; // [{id, destino, numeroCajas}]
-  if (!Array.isArray(updates)) {
-    return res.status(400).json({ error: 'Formato de datos incorrecto' });
+// Al iniciar el servidor, programar reset para cualquier andén en 'Embarcado'
+andenes.forEach((anden, idx) => {
+  if (anden.status === 'Embarcado') {
+    setTimeout(() => {
+      andenes[idx].pallets = [];
+      andenes[idx].cantidad = 0;
+      andenes[idx].status = 'Disponible';
+      andenes[idx].destino = '';
+      andenes[idx].numeroCajas = 0;
+      andenes[idx].limiteCamion = 0;
+      andenes[idx].ultimaFechaEscaneo = null;
+      andenes[idx].horaInicioEscaneo = null;
+      andenes[idx].horaCompletado = null;
+      andenes[idx].horaDocumentado = null;
+      andenes[idx].horaEmbarcado = null;
+      andenes[idx].usuarioDocumenta = null;
+      andenes[idx].usuarioEmbarca = null;
+      historialMovimientos.unshift({
+        fechaHora: Date.now(),
+        anden: andenes[idx].id,
+        tipo: 'status',
+        codigo: 'Disponible',
+        usuario: 'admin',
+        info: 'Cambio automático tras embarque'
+      });
+      if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
+      console.log(`Andén ${anden.id} reseteado automáticamente a 'Disponible' tras inicio del servidor.`);
+    }, 1 * 60 * 1000);
   }
-  updates.forEach(update => {
-    const idx = andenes.findIndex(a => a.id === Number(update.id));
-    if (idx !== -1) {
-      if (update.destino !== undefined && update.destino.trim() !== '') {
-        andenes[idx].destino = update.destino;
-      }
-      if (update.numeroCajas !== undefined && !isNaN(Number(update.numeroCajas))) {
-        andenes[idx].numeroCajas = Number(update.numeroCajas);
-      }
-    }
-  });
-  res.json({ success: true });
+});
+// ...existing code...
+// Endpoint para editar datos de un andén (para /cuadricula)
+app.put('/api/andenes/:id', (req, res) => {
+  const idx = andenes.findIndex(a => a.id === Number(req.params.id));
+  if (idx === -1) return res.status(404).json({ error: 'Andén no encontrado' });
+  const { status, destino, numeroCajas, limiteCamion } = req.body;
+  let cambio = false;
+  if (status !== undefined && typeof status === 'string') {
+    andenes[idx].status = status;
+    cambio = true;
+    historialMovimientos.unshift({
+      fechaHora: Date.now(),
+      anden: andenes[idx].id,
+      tipo: 'status',
+      codigo: status,
+      usuario: 'admin',
+      info: 'Cambio manual desde PUT /api/andenes/:id'
+    });
+  }
+  if (destino !== undefined && typeof destino === 'string') {
+    andenes[idx].destino = destino;
+    cambio = true;
+    historialMovimientos.unshift({
+      fechaHora: Date.now(),
+      anden: andenes[idx].id,
+      tipo: 'destino',
+      codigo: destino,
+      usuario: 'admin',
+      info: 'Cambio manual desde PUT /api/andenes/:id'
+    });
+  }
+  if (numeroCajas !== undefined && !isNaN(Number(numeroCajas))) {
+    andenes[idx].numeroCajas = Number(numeroCajas);
+    cambio = true;
+    historialMovimientos.unshift({
+      fechaHora: Date.now(),
+      anden: andenes[idx].id,
+      tipo: 'numeroCajas',
+      codigo: numeroCajas,
+      usuario: 'admin',
+      info: 'Cambio manual desde PUT /api/andenes/:id'
+    });
+  }
+  if (limiteCamion !== undefined && !isNaN(Number(limiteCamion))) {
+    andenes[idx].limiteCamion = Number(limiteCamion);
+    cambio = true;
+    historialMovimientos.unshift({
+      fechaHora: Date.now(),
+      anden: andenes[idx].id,
+      tipo: 'limiteCamion',
+      codigo: limiteCamion,
+      usuario: 'admin',
+      info: 'Cambio manual desde PUT /api/andenes/:id'
+    });
+  }
+  if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
+  res.json({ success: true, anden: andenes[idx] });
 });
 app.post('/api/scan', (req, res) => {
   console.log('Escaneo recibido en /api/scan:', req.body);
   const { anden, ubicacion, numeroParte, destino, numeroCajas, codigoPallet } = req.body;
-  // Si no se reciben los datos esperados, solo loguea y responde
-  if (!anden || !ubicacion || !numeroParte) {
-    return res.json({ success: true, info: 'Datos no procesados, formato inesperado' });
-  }
-  // ...procesamiento normal...
+  // Si faltan datos, usar valores por defecto
   const idx = andenes.findIndex(a => a.id === Number(anden));
-  if (idx === -1) return res.status(404).json({ error: 'Anden no encontrado' });
-  if (destino && destino.trim() !== '' && destino.trim().toLowerCase() !== 'sin definir') {
-    andenes[idx].destino = destino;
-  }
-  if (typeof numeroCajas === 'number') {
-    andenes[idx].numeroCajas = numeroCajas;
-  }
+  const defaultAnden = idx !== -1 ? andenes[idx] : andenes[0];
   const pallet = {
     id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
-    ubicacion,
-    numeroParte,
-    codigoPallet,
+    ubicacion: ubicacion || `A${defaultAnden.id}`,
+    numeroParte: numeroParte || '-',
+    codigoPallet: codigoPallet || '-',
     timestamp: Date.now()
   };
-  andenes[idx].pallets.push(pallet);
-  andenes[idx].cantidad = andenes[idx].pallets.length;
-  andenes[idx].ultimaFechaEscaneo = pallet.timestamp;
-  // Guardar en historial
-  if (!historialEscaneos[andenes[idx].id]) historialEscaneos[andenes[idx].id] = [];
-  historialEscaneos[andenes[idx].id].unshift({ id: pallet.id, ubicacion: pallet.ubicacion, numeroParte: pallet.numeroParte, codigoPallet: pallet.codigoPallet, timestamp: pallet.timestamp });
-  if (historialEscaneos[andenes[idx].id].length > 30) historialEscaneos[andenes[idx].id] = historialEscaneos[andenes[idx].id].slice(0, 30);
-  if (andenes[idx].cantidad >= 30) {
-    andenes[idx].status = 'Completado';
-  } else if (andenes[idx].cantidad > 0) {
-    andenes[idx].status = 'Cargando';
+  defaultAnden.pallets.push(pallet);
+  defaultAnden.cantidad = defaultAnden.pallets.length;
+  defaultAnden.ultimaFechaEscaneo = pallet.timestamp;
+  if (destino && destino.trim() !== '' && destino.trim().toLowerCase() !== 'sin definir') {
+    defaultAnden.destino = destino;
+  }
+  if (typeof numeroCajas === 'number') {
+    defaultAnden.numeroCajas = numeroCajas;
+  }
+  // Guardar en historial por andén
+  if (!historialEscaneos[defaultAnden.id]) historialEscaneos[defaultAnden.id] = [];
+  historialEscaneos[defaultAnden.id].unshift({ id: pallet.id, ubicacion: pallet.ubicacion, numeroParte: pallet.numeroParte, codigoPallet: pallet.codigoPallet, timestamp: pallet.timestamp });
+  if (historialEscaneos[defaultAnden.id].length > 30) historialEscaneos[defaultAnden.id] = historialEscaneos[defaultAnden.id].slice(0, 30);
+  // Guardar en historial global de movimientos como escaneo
+  historialMovimientos.unshift({
+    fechaHora: pallet.timestamp,
+    anden: defaultAnden.id,
+    tipo: 'escaneo',
+    codigo: pallet.codigoPallet,
+    usuario: 'admin',
+    info: 'Escaneo registrado en /api/scan'
+  });
+  if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
+  // Guardar cambio de status en historial global si corresponde
+  let nuevoStatus = '';
+  if (defaultAnden.cantidad >= 30) {
+    defaultAnden.status = 'Completado';
+    nuevoStatus = 'Completado';
+  } else if (defaultAnden.cantidad > 0) {
+    defaultAnden.status = 'Cargando';
+    nuevoStatus = 'Cargando';
   } else {
-    andenes[idx].status = 'En espera';
+    defaultAnden.status = 'En espera';
+    nuevoStatus = 'En espera';
   }
-// Endpoint para registrar un escaneo en un anden
-app.post('/api/andenes/:id/scan', (req, res) => {
-  const andenId = Number(req.params.id);
-  const { id, ubicacion, numeroParte, codigoPallet, timestamp } = req.body;
-  if (!id || !ubicacion || !numeroParte || !codigoPallet || !timestamp) {
-    return res.status(400).json({ error: 'Datos de escaneo incompletos' });
-  }
-  // Actualizar datos del anden
-  const idx = andenes.findIndex(a => a.id === andenId);
-  if (idx === -1) return res.status(404).json({ error: 'Anden no encontrado' });
-  const pallet = { id, ubicacion, numeroParte, codigoPallet, timestamp };
-  andenes[idx].pallets.push(pallet);
-  andenes[idx].cantidad = andenes[idx].pallets.length;
-  andenes[idx].ultimaFechaEscaneo = timestamp;
-  if (andenes[idx].cantidad >= 30) {
-    andenes[idx].status = 'Completado';
-  } else if (andenes[idx].cantidad > 0) {
-    andenes[idx].status = 'Cargando';
-  } else {
-    andenes[idx].status = 'En espera';
-  }
-  // Guardar en historial
-  if (!historialEscaneos[andenId]) historialEscaneos[andenId] = [];
-  historialEscaneos[andenId].unshift({ id, ubicacion, numeroParte, codigoPallet, timestamp });
-  // Limitar a 30 escaneos
-  if (historialEscaneos[andenId].length > 30) historialEscaneos[andenId] = historialEscaneos[andenId].slice(0, 30);
+  historialMovimientos.unshift({
+    fechaHora: Date.now(),
+    anden: defaultAnden.id,
+    tipo: 'status',
+    codigo: nuevoStatus,
+    usuario: 'admin',
+    info: `Cambio de status por escaneo en /api/scan`
+  });
   res.json({ success: true });
 });
 
-  res.json({ success: true });
-});
-    // Endpoint para obtener historial de escaneos de un anden
-// Endpoint para obtener historial de escaneos de un anden
-app.get('/api/andenes/:id/historial', (req, res) => {
-  const andenId = Number(req.params.id);
-  const historial = historialEscaneos[andenId] || [];
-  res.json({ historial });
+// Endpoint para historial global de movimientos (debe ir antes de cualquier catch-all)
+app.get('/api/historial', (req, res) => {
+  let { limit, offset } = req.query;
+  limit = Number(limit) || 20;
+  offset = Number(offset) || 0;
+  res.json(historialMovimientos.slice(offset, offset + limit));
 });
 
 
@@ -454,6 +544,15 @@ app.post('/api/andenes/:id/destino', (req, res) => {
   const idx = andenes.findIndex(a => a.id === Number(req.params.id));
   if (idx === -1) return res.status(404).json({ error: 'Anden no encontrado' });
   andenes[idx].destino = destino;
+  historialMovimientos.unshift({
+    fechaHora: Date.now(),
+    anden: andenes[idx].id,
+    tipo: 'destino',
+    codigo: destino,
+    usuario: 'admin',
+    info: 'Cambio de destino en /api/andenes/:id/destino'
+  });
+  if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
   res.json({ success: true });
 });
 
@@ -463,6 +562,15 @@ app.post('/api/andenes/:id/caja', (req, res) => {
   const idx = andenes.findIndex(a => a.id === Number(req.params.id));
   if (idx === -1) return res.status(404).json({ error: 'Anden no encontrado' });
   andenes[idx].numeroCajaCamion = numeroCajaCamion;
+  historialMovimientos.unshift({
+    fechaHora: Date.now(),
+    anden: andenes[idx].id,
+    tipo: 'numeroCajas',
+    codigo: numeroCajaCamion,
+    usuario: 'admin',
+    info: 'Cambio de número de caja en /api/andenes/:id/caja'
+  });
+  if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
   res.json({ success: true });
 });
 
@@ -472,6 +580,15 @@ app.post('/api/andenes/:id/limite', (req, res) => {
   const idx = andenes.findIndex(a => a.id === Number(req.params.id));
   if (idx === -1) return res.status(404).json({ error: 'Anden no encontrado' });
   andenes[idx].limiteCamion = limiteCamion;
+  historialMovimientos.unshift({
+    fechaHora: Date.now(),
+    anden: andenes[idx].id,
+    tipo: 'limiteCamion',
+    codigo: limiteCamion,
+    usuario: 'admin',
+    info: 'Cambio de límite de tarimas en /api/andenes/:id/limite'
+  });
+  if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
   res.json({ success: true });
 });
 
@@ -488,11 +605,36 @@ app.post('/api/andenes/:id/pallet', (req, res) => {
   };
   andenes[idx].pallets.push(pallet);
   andenes[idx].cantidadTarimas = andenes[idx].pallets.length;
+  // Registrar en historial global de movimientos como escaneo
+  historialMovimientos.unshift({
+    fechaHora: pallet.horaEscaneo,
+    anden: andenes[idx].id,
+    tipo: 'escaneo',
+    codigo: pallet.numeroParte,
+    usuario: 'admin',
+    info: 'Escaneo registrado en /api/andenes/:id/pallet'
+  });
+  if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
   if (andenes[idx].cantidadTarimas >= (andenes[idx].limiteCamion || 30)) {
     andenes[idx].status = 'Completado';
     andenes[idx].horaCompletado = Date.now();
+    // Registrar cambio de status en historial
+    historialMovimientos.unshift({
+      fechaHora: Date.now(),
+      anden: andenes[idx].id,
+      tipo: 'status',
+      codigo: 'Completado',
+      usuario: req.body.usuario || 'sistema'
+    });
   } else {
     andenes[idx].status = 'Cargando';
+    historialMovimientos.unshift({
+      fechaHora: Date.now(),
+      anden: andenes[idx].id,
+      tipo: 'status',
+      codigo: 'Cargando',
+      usuario: req.body.usuario || 'sistema'
+    });
   }
   res.json({ success: true, pallet });
 });
@@ -561,7 +703,7 @@ app.post('/api/andenes/:id/embarcar', (req, res) => {
   andenes[idx].status = 'Embarcado';
   andenes[idx].horaEmbarcado = Date.now();
   andenes[idx].usuarioEmbarca = usuario;
-  // Guardar ciclo en historial y limpiar andén
+  // Guardar ciclo en historial
   const ciclo = {
     id: andenes[idx].id,
     destino: andenes[idx].destino,
@@ -578,19 +720,22 @@ app.post('/api/andenes/:id/embarcar', (req, res) => {
   try {
     fs.writeFileSync(HISTORIAL_PATH, JSON.stringify(historialCiclos, null, 2));
   } catch(e) { console.error('Error guardando historial:', e); }
-  // Limpiar andén para nuevo ciclo
-  andenes[idx].pallets = [];
-  andenes[idx].cantidad = 0;
-  andenes[idx].status = 'En espera';
-  andenes[idx].destino = '';
-  andenes[idx].numeroCajas = 0;
-  andenes[idx].ultimaFechaEscaneo = null;
-  andenes[idx].horaInicioEscaneo = null;
-  andenes[idx].horaCompletado = null;
-  andenes[idx].horaDocumentado = null;
-  andenes[idx].horaEmbarcado = null;
-  andenes[idx].usuarioDocumenta = null;
-  andenes[idx].usuarioEmbarca = null;
+  // Programar reset automático a 'Disponible' en 1 minuto (pruebas)
+  setTimeout(() => {
+    andenes[idx].pallets = [];
+    andenes[idx].cantidad = 0;
+    andenes[idx].status = 'Disponible';
+    andenes[idx].destino = '';
+    andenes[idx].numeroCajas = 0;
+    andenes[idx].limiteCamion = 0;
+    andenes[idx].ultimaFechaEscaneo = null;
+    andenes[idx].horaInicioEscaneo = null;
+    andenes[idx].horaCompletado = null;
+    andenes[idx].horaDocumentado = null;
+    andenes[idx].horaEmbarcado = null;
+    andenes[idx].usuarioDocumenta = null;
+    andenes[idx].usuarioEmbarca = null;
+  }, 15 * 60 * 1000);
   res.json({ success: true });
 });
 // Endpoint para consultar historial completo de ciclos por andén
