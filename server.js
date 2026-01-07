@@ -191,7 +191,7 @@ andenes.forEach((anden, idx) => {
         anden: andenes[idx].id,
         tipo: 'status',
         codigo: 'Disponible',
-        usuario: 'admin',
+        usuario: 'Sistema',
         info: 'Cambio automático tras embarque'
       });
       if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
@@ -243,16 +243,18 @@ app.put('/api/andenes/:id', (req, res) => {
     });
   }
   if (limiteCamion !== undefined && !isNaN(Number(limiteCamion))) {
-    andenes[idx].limiteCamion = Number(limiteCamion);
-    cambio = true;
-    historialMovimientos.unshift({
-      fechaHora: Date.now(),
-      anden: andenes[idx].id,
-      tipo: 'limiteCamion',
-      codigo: limiteCamion,
-      usuario: 'admin',
-      info: 'Cambio manual desde PUT /api/andenes/:id'
-    });
+    if (Number(limiteCamion) !== Number(andenes[idx].limiteCamion)) {
+      andenes[idx].limiteCamion = Number(limiteCamion);
+      cambio = true;
+      historialMovimientos.unshift({
+        fechaHora: Date.now(),
+        anden: andenes[idx].id,
+        tipo: 'limiteCamion',
+        codigo: limiteCamion,
+        usuario: 'admin',
+        info: 'Cambio manual desde PUT /api/andenes/:id'
+      });
+    }
   }
   if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
   res.json({ success: true, anden: andenes[idx] });
@@ -310,7 +312,7 @@ app.post('/api/scan', (req, res) => {
     anden: defaultAnden.id,
     tipo: 'status',
     codigo: nuevoStatus,
-    usuario: 'admin',
+    usuario: 'Sistema',
     info: `Cambio de status por escaneo en /api/scan`
   });
   res.json({ success: true });
@@ -618,13 +620,13 @@ app.post('/api/andenes/:id/pallet', (req, res) => {
   if (andenes[idx].cantidadTarimas >= (andenes[idx].limiteCamion || 30)) {
     andenes[idx].status = 'Completado';
     andenes[idx].horaCompletado = Date.now();
-    // Registrar cambio de status en historial
+    // Registrar cambio de status en historial (automático)
     historialMovimientos.unshift({
       fechaHora: Date.now(),
       anden: andenes[idx].id,
       tipo: 'status',
       codigo: 'Completado',
-      usuario: req.body.usuario || 'sistema'
+      usuario: 'Sistema'
     });
   } else {
     andenes[idx].status = 'Cargando';
@@ -633,7 +635,7 @@ app.post('/api/andenes/:id/pallet', (req, res) => {
       anden: andenes[idx].id,
       tipo: 'status',
       codigo: 'Cargando',
-      usuario: req.body.usuario || 'sistema'
+      usuario: 'Sistema'
     });
   }
   res.json({ success: true, pallet });
