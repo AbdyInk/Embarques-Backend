@@ -74,20 +74,39 @@ function validarUsuario(usuario) {
 // Cargar usuarios al iniciar
 cargarUsuarios();
 
-// Endpoint de login
+// Endpoint de login con diferentes tiempos de expiración por rol
 app.post('/api/login', (req, res) => {
   const { usuario, password } = req.body;
   const user = usuarios.find(u => u.usuario === usuario && u.password === password && u.activo);
   if (!user) {
     return res.status(401).json({ error: 'Credenciales inválidas' });
   }
-  // Generar token (expira en 3 horas)
+  
+  // Diferentes tiempos de expiración según el rol
+  let expiresIn;
+  if (user.grupo === 'administrador') {
+    expiresIn = '2h'; // Administradores: 2 horas
+  } else if (user.grupo === 'operador') {
+    expiresIn = '12h'; // Operadores: 12 horas
+  } else {
+    expiresIn = '1h'; // Por defecto: 1 hora
+  }
+  
   const token = jwt.sign({ 
     usuario: user.usuario, 
     grupo: user.grupo, 
     id: user.id 
-  }, JWT_SECRET, { expiresIn: '3h' });
-  res.json({ token, usuario: { usuario: user.usuario, grupo: user.grupo } });
+  }, JWT_SECRET, { expiresIn });
+  
+  res.json({ 
+    token, 
+    usuario: { 
+      id: user.id,
+      usuario: user.usuario, 
+      grupo: user.grupo 
+    },
+    expiresIn 
+  });
 });
 
 // Middleware para proteger rutas
@@ -109,6 +128,18 @@ function requireAdmin(req, res, next) {
   }
   next();
 }
+
+// Endpoint para validar token y obtener información del usuario
+app.get('/api/validate-token', autenticarJWT, (req, res) => {
+  res.json({ 
+    valid: true, 
+    usuario: {
+      id: req.user.id,
+      usuario: req.user.usuario,
+      grupo: req.user.grupo
+    }
+  });
+});
 
 // Ejemplo de ruta protegida
 app.get('/api/protegido', autenticarJWT, (req, res) => {
