@@ -21,22 +21,73 @@ app.use('/api/tcp', express.text());
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = 'culligan_secret_2025'; // Cambia esto en producción
 
-// Usuarios de prueba (en memoria)
-const usuarios = [
-  { usuario: 'admin', password: 'admin123' },
-  { usuario: 'operador', password: 'operador123' }
-];
+// --- Sistema de usuarios completo ---
+const USUARIOS_PATH = __dirname + '/usuarios.json';
+let usuarios = [];
+
+// Cargar usuarios desde archivo
+function cargarUsuarios() {
+  try {
+    if (fs.existsSync(USUARIOS_PATH)) {
+      usuarios = JSON.parse(fs.readFileSync(USUARIOS_PATH, 'utf8'));
+    } else {
+      // Usuarios por defecto
+      usuarios = [
+        { id: 1, usuario: 'admin', password: 'admin123', grupo: 'administrador', activo: true, fechaCreacion: new Date().toISOString() },
+        { id: 2, usuario: 'operador', password: 'operador123', grupo: 'operador', activo: true, fechaCreacion: new Date().toISOString() }
+      ];
+      guardarUsuarios();
+    }
+  } catch (e) {
+    console.error('Error cargando usuarios:', e);
+    usuarios = [];
+  }
+}
+
+// Guardar usuarios en archivo
+function guardarUsuarios() {
+  try {
+    fs.writeFileSync(USUARIOS_PATH, JSON.stringify(usuarios, null, 2));
+  } catch (e) {
+    console.error('Error guardando usuarios:', e);
+  }
+}
+
+// Validaciones
+function validarUsuario(usuario) {
+  const errores = [];
+  if (!usuario.usuario || usuario.usuario.length < 3) {
+    errores.push('El nombre de usuario debe tener al menos 3 caracteres');
+  }
+  if (!usuario.password || usuario.password.length < 6) {
+    errores.push('La contraseña debe tener al menos 6 caracteres');
+  }
+  if (!['operador', 'administrador'].includes(usuario.grupo)) {
+    errores.push('El grupo debe ser operador o administrador');
+  }
+  if (usuarios.find(u => u.usuario === usuario.usuario && u.id !== usuario.id)) {
+    errores.push('Ya existe un usuario con ese nombre');
+  }
+  return errores;
+}
+
+// Cargar usuarios al iniciar
+cargarUsuarios();
 
 // Endpoint de login
 app.post('/api/login', (req, res) => {
   const { usuario, password } = req.body;
-  const user = usuarios.find(u => u.usuario === usuario && u.password === password);
+  const user = usuarios.find(u => u.usuario === usuario && u.password === password && u.activo);
   if (!user) {
     return res.status(401).json({ error: 'Credenciales inválidas' });
   }
   // Generar token (expira en 3 horas)
-  const token = jwt.sign({ usuario: user.usuario }, JWT_SECRET, { expiresIn: '3h' });
-  res.json({ token });
+  const token = jwt.sign({ 
+    usuario: user.usuario, 
+    grupo: user.grupo, 
+    id: user.id 
+  }, JWT_SECRET, { expiresIn: '3h' });
+  res.json({ token, usuario: { usuario: user.usuario, grupo: user.grupo } });
 });
 
 // Middleware para proteger rutas
@@ -51,10 +102,208 @@ function autenticarJWT(req, res, next) {
   });
 }
 
+// Middleware para verificar permisos de administrador
+function requireAdmin(req, res, next) {
+  if (req.user.grupo !== 'administrador') {
+    return res.status(403).json({ error: 'Se requieren permisos de administrador' });
+  }
+  next();
+}
+
 // Ejemplo de ruta protegida
 app.get('/api/protegido', autenticarJWT, (req, res) => {
   res.json({ mensaje: 'Acceso autorizado', usuario: req.user.usuario });
 });
+
+// --- ENDPOINTS CRUD USUARIOS ---
+
+// GET /api/usuarios - Listar todos los usuarios (solo admin)
+app.get('/api/usuarios', autenticarJWT, requireAdmin, (req, res) => {
+  try {
+    // No enviar passwords
+    const usuariosSinPassword = usuarios.map(u => ({
+      id: u.id,
+      usuario: u.usuario,
+      grupo: u.grupo,
+      activo: u.activo,
+      fechaCreacion: u.fechaCreacion
+    }));
+    res.json(usuariosSinPassword);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener usuarios' });
+  }
+});
+
+// POST /api/usuarios - Crear nuevo usuario (solo admin)
+app.post('/api/usuarios', autenticarJWT, requireAdmin, (req, res) => {
+  try {
+    const { usuario, password, grupo } = req.body;
+    const nuevoUsuario = {
+      id: Math.max(...usuarios.map(u => u.id), 0) + 1,
+      usuario,
+      password,
+      grupo,
+      activo: true,
+      fechaCreacion: new Date().toISOString()
+    };
+
+    const errores = validarUsuario(nuevoUsuario);
+    if (errores.length > 0) {
+      return res.status(400).json({ error: errores.join(', ') });
+    }
+
+    usuarios.push(nuevoUsuario);
+    guardarUsuarios();
+
+    // Registrar en historial
+    historialMovimientos.push({
+      fechaHora: Date.now(),
+      anden: null,
+      tipo: 'usuario',
+      codigo: `Creado: ${usuario}`,
+      usuario: req.user.usuario,
+      info: `Usuario ${usuario} creado con grupo ${grupo}`
+    });
+
+    res.status(201).json({ 
+      mensaje: 'Usuario creado exitosamente',
+      usuario: {
+        id: nuevoUsuario.id,
+        usuario: nuevoUsuario.usuario,
+        grupo: nuevoUsuario.grupo,
+        activo: nuevoUsuario.activo,
+        fechaCreacion: nuevoUsuario.fechaCreacion
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Error al crear usuario' });
+  }
+});
+
+// PUT /api/usuarios/:id - Actualizar usuario (solo admin)
+app.put('/api/usuarios/:id', autenticarJWT, requireAdmin, (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { usuario, password, grupo, activo } = req.body;
+    
+    // Proteger usuarios por defecto
+    if (id === 1 || id === 2) {
+      return res.status(403).json({ error: 'No se pueden modificar los usuarios por defecto del sistema' });
+    }
+    
+    const usuarioExistente = usuarios.find(u => u.id === id);
+    if (!usuarioExistente) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    // No permitir que se desactive a sí mismo
+    if (id === req.user.id && activo === false) {
+      return res.status(400).json({ error: 'No puedes desactivar tu propia cuenta' });
+    }
+
+    const usuarioActualizado = {
+      ...usuarioExistente,
+      usuario: usuario || usuarioExistente.usuario,
+      password: password || usuarioExistente.password,
+      grupo: grupo || usuarioExistente.grupo,
+      activo: activo !== undefined ? activo : usuarioExistente.activo
+    };
+
+    const errores = validarUsuario(usuarioActualizado);
+    if (errores.length > 0) {
+      return res.status(400).json({ error: errores.join(', ') });
+    }
+
+    const index = usuarios.findIndex(u => u.id === id);
+    usuarios[index] = usuarioActualizado;
+    guardarUsuarios();
+
+    // Registrar en historial
+    historialMovimientos.push({
+      fechaHora: Date.now(),
+      anden: null,
+      tipo: 'usuario',
+      codigo: `Actualizado: ${usuarioActualizado.usuario}`,
+      usuario: req.user.usuario,
+      info: `Usuario ${usuarioActualizado.usuario} actualizado`
+    });
+
+    res.json({
+      mensaje: 'Usuario actualizado exitosamente',
+      usuario: {
+        id: usuarioActualizado.id,
+        usuario: usuarioActualizado.usuario,
+        grupo: usuarioActualizado.grupo,
+        activo: usuarioActualizado.activo,
+        fechaCreacion: usuarioActualizado.fechaCreacion
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Error al actualizar usuario' });
+  }
+});
+
+// DELETE /api/usuarios/:id - Eliminar usuario (solo admin)
+app.delete('/api/usuarios/:id', autenticarJWT, requireAdmin, (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    
+    // Proteger usuarios por defecto
+    if (id === 1 || id === 2) {
+      return res.status(403).json({ error: 'No se pueden eliminar los usuarios por defecto del sistema' });
+    }
+    
+    const usuario = usuarios.find(u => u.id === id);
+    if (!usuario) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    // No permitir que se elimine a sí mismo
+    if (id === req.user.id) {
+      return res.status(400).json({ error: 'No puedes eliminar tu propia cuenta' });
+    }
+
+    const nombreUsuario = usuario.usuario;
+    usuarios = usuarios.filter(u => u.id !== id);
+    guardarUsuarios();
+
+    // Registrar en historial
+    historialMovimientos.push({
+      fechaHora: Date.now(),
+      anden: null,
+      tipo: 'usuario',
+      codigo: `Eliminado: ${nombreUsuario}`,
+      usuario: req.user.usuario,
+      info: `Usuario ${nombreUsuario} eliminado del sistema`
+    });
+
+    res.json({ mensaje: 'Usuario eliminado exitosamente' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error al eliminar usuario' });
+  }
+});
+
+// GET /api/usuarios/me - Obtener datos del usuario actual
+app.get('/api/usuarios/me', autenticarJWT, (req, res) => {
+  try {
+    const usuario = usuarios.find(u => u.id === req.user.id);
+    if (!usuario) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+    
+    res.json({
+      id: usuario.id,
+      usuario: usuario.usuario,
+      grupo: usuario.grupo,
+      activo: usuario.activo,
+      fechaCreacion: usuario.fechaCreacion
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener datos del usuario' });
+  }
+});
+
+// --- FIN ENDPOINTS USUARIOS ---
 
 // Historial de escaneos por anden (máximo 30 por anden)
 const historialEscaneos = {};
