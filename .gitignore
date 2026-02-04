@@ -24,3 +24,4 @@ dist-ssr
 *.sw?
 andenesHistorial.json
 usuarios.json
+test-connectivity.html

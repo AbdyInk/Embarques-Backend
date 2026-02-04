@@ -1,3 +1,6 @@
+// --- CONFIGURACIÓN DE DESARROLLO ---
+const USE_DEV_DATA = false; // Cambiar a true para datos de prueba/desarrollo
+
 // --- Historial completo de ciclos por anden (simulado en archivo) ---
 const fs = require('fs');
 const HISTORIAL_PATH = __dirname + '/andenesHistorial.json';
@@ -12,14 +15,38 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-app.use(cors());
+// --- CONFIGURACIÓN CORS PARA PRODUCCIÓN ---
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173', 
+  'http://localhost:4173',
+  'https://culligan.vitotechnologies.com',
+  'http://culligan.vitotechnologies.com'
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Permitir requests sin origin (como mobile apps o Postman)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('⚠️  CORS bloqueado para origen:', origin);
+      callback(new Error('No permitido por CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 app.use(express.json());
 app.use('/api/tcp', express.text());
 
 // --- Autenticación JWT ---
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = 'culligan_secret_2025'; // Cambia esto en producción
+const JWT_SECRET = process.env.JWT_SECRET || 'culligan_secret_production_2026_vitotechnologies'; // Más seguro para producción
 
 // --- Sistema de usuarios completo ---
 const USUARIOS_PATH = __dirname + '/usuarios.json';
@@ -337,10 +364,16 @@ app.get('/api/usuarios/me', autenticarJWT, (req, res) => {
 // --- FIN ENDPOINTS USUARIOS ---
 
 // Historial de escaneos por anden (máximo 30 por anden)
-const historialEscaneos = {};
+const historialEscaneos = USE_DEV_DATA ? {
+  // En modo desarrollo, inicializar con algunos escaneos de ejemplo
+  1: [
+    { id: 'p1', ubicacion: 'A1', numeroParte: 'P-DEMO1', codigoPallet: 'CP-DEMO1', timestamp: Date.now() - 1000 * 60 * 5 },
+    { id: 'p2', ubicacion: 'A1', numeroParte: 'P-DEMO2', codigoPallet: 'CP-DEMO2', timestamp: Date.now() - 1000 * 60 * 3 }
+  ]
+} : {}; // En modo producción, historial completamente vacío
 
 // Historial global de movimientos (escaneos y cambios de status)
-let historialMovimientos = [
+let historialMovimientos = USE_DEV_DATA ? [
   // 7 escaneos
   ...Array.from({length: 7}, (_, i) => ({
     fechaHora: Date.now() - 1000 * 60 * (20 - i),
@@ -368,10 +401,11 @@ let historialMovimientos = [
     usuario: 'admin',
     info: `Cambio en campo del andén de prueba ${i+1}`
   }))
-];
+] : []; // Historial vacío para producción
 
 // Almacenamiento en memoria de pallets por anden
-let andenes = [
+let andenes = USE_DEV_DATA ? [
+  // DATOS DE DESARROLLO/PRUEBAS
   {
     id: 1,
     pallets: Array.from({ length: 28 }, (_, i) => ({
@@ -447,6 +481,14 @@ let andenes = [
     destino: 'Toronto',
     ultimaFechaEscaneo: Date.now()
   }
+] : [
+  // DATOS DE PRODUCCIÓN - ANDENES VACÍOS
+  { id: 1, pallets: [], numeroCajas: 0, cantidad: 0, limiteCamion: 0, status: 'Disponible', destino: '', ultimaFechaEscaneo: null },
+  { id: 2, pallets: [], numeroCajas: 0, cantidad: 0, limiteCamion: 0, status: 'Disponible', destino: '', ultimaFechaEscaneo: null },
+  { id: 3, pallets: [], numeroCajas: 0, cantidad: 0, limiteCamion: 0, status: 'Disponible', destino: '', ultimaFechaEscaneo: null },
+  { id: 4, pallets: [], numeroCajas: 0, cantidad: 0, limiteCamion: 0, status: 'Disponible', destino: '', ultimaFechaEscaneo: null },
+  { id: 5, pallets: [], numeroCajas: 0, cantidad: 0, limiteCamion: 0, status: 'Disponible', destino: '', ultimaFechaEscaneo: null },
+  { id: 6, pallets: [], numeroCajas: 0, cantidad: 0, limiteCamion: 0, status: 'Disponible', destino: '', ultimaFechaEscaneo: null }
 ];
 
 // Al iniciar el servidor, programar reset para cualquier andén en 'Embarcado'
@@ -655,6 +697,29 @@ app.post('/', (req, res) => {
     res.json({ success: true });
   });
 
+// Endpoint de health check para monitoreo
+app.get('/api/health', (req, res) => {
+  const uptime = process.uptime();
+  const memoryUsage = process.memoryUsage();
+  
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    environment: USE_DEV_DATA ? 'DESARROLLO' : 'PRODUCCIÓN',
+    uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`,
+    memory: {
+      used: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`,
+      total: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)}MB`
+    },
+    ports: {
+      http: PORT,
+      tcp: 4040
+    },
+    corsOrigins: allowedOrigins,
+    version: '1.0.0'
+  });
+});
+
 // Endpoint para consultar datos desde el frontend
 app.get('/api/andenes', (req, res) => {
   res.json(andenes);
@@ -666,8 +731,40 @@ app.get('/api/escaneos', (req, res) => {
   res.json({ historial: historialEscaneos });
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend escuchando en puerto ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n🚀 === CULLIGAN BACKEND INICIADO ===`);
+  console.log(`📊 Modo: ${USE_DEV_DATA ? 'DESARROLLO' : 'PRODUCCIÓN (PRUEBAS)'}`);
+  console.log(`🌐 Puerto HTTP: ${PORT} (todas las interfaces)`);
+  
+  // Mostrar IP local para pruebas
+  const os = require('os');
+  const networkInterfaces = os.networkInterfaces();
+  const localIPs = [];
+  Object.keys(networkInterfaces).forEach(interfaceName => {
+    networkInterfaces[interfaceName].forEach(interfaceInfo => {
+      if (interfaceInfo.family === 'IPv4' && !interfaceInfo.internal) {
+        localIPs.push(interfaceInfo.address);
+      }
+    });
+  });
+  
+  console.log('🔗 URLs de acceso:');
+  console.log(`   Local: http://localhost:${PORT}`);
+  localIPs.forEach(ip => {
+    console.log(`   Red:   http://${ip}:${PORT}`);
+  });
+  
+  console.log('🔒 CORS configurado para:');
+  allowedOrigins.forEach(origin => console.log(`   - ${origin}`));
+  
+  console.log('='.repeat(50));
+  console.log(`🔧 MODO DE DESARROLLO: ${USE_DEV_DATA ? 'ACTIVADO' : 'DESACTIVADO'}`);
+  if (USE_DEV_DATA) {
+    console.log('📊 Usando datos de prueba con andenes pre-cargados');
+  } else {
+    console.log('🏭 Modo producción: andenes vacíos, listos para escaneo');
+  }
+  console.log('='.repeat(50));
 });
 
 // Servidor TCP para recibir datos directos (por ejemplo, desde IPWedge)
@@ -766,8 +863,28 @@ const tcpServer = net.createServer(socket => {
     console.log('Error en conexión TCP:', err);
   });
 });
-tcpServer.listen(TCP_PORT, () => {
-  console.log(`Servidor TCP escuchando en puerto ${TCP_PORT}`);
+tcpServer.listen(TCP_PORT, '0.0.0.0', () => {
+  console.log(`Servidor TCP escuchando en puerto ${TCP_PORT} (todas las interfaces)`);
+  
+  // Mostrar IPs para conexiones TCP
+  const os = require('os');
+  const networkInterfaces = os.networkInterfaces();
+  const localIPs = [];
+  Object.keys(networkInterfaces).forEach(interfaceName => {
+    networkInterfaces[interfaceName].forEach(interfaceInfo => {
+      if (interfaceInfo.family === 'IPv4' && !interfaceInfo.internal) {
+        localIPs.push(interfaceInfo.address);
+      }
+    });
+  });
+  
+  console.log('📱 Conexiones TCP disponibles:');
+  console.log(`   Local: localhost:${TCP_PORT}`);
+  localIPs.forEach(ip => {
+    console.log(`   Red:   ${ip}:${TCP_PORT}`);
+  });
+  
+  console.log('🔌 Para probar: telnet IP 4040 o usar app de scanner');
   console.log('Para cambiar el anden destino de escaneos TCP, escribe: anden <número>');
 });
 
