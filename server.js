@@ -1,5 +1,5 @@
 // --- CONFIGURACIÓN DE DESARROLLO ---
-const USE_DEV_DATA = false; // Cambiar a true para datos de prueba/desarrollo
+const USE_DEV_DATA = true; // Cambiar a true para datos de prueba/desarrollo
 
 // --- Historial completo de ciclos por anden (simulado en archivo) ---
 const fs = require('fs');
@@ -21,13 +21,18 @@ const allowedOrigins = [
   'http://localhost:5173', 
   'http://localhost:4173',
   'https://culligan.vitotechnologies.com',
-  'http://culligan.vitotechnologies.com'
+  'http://culligan.vitotechnologies.com',
+  'https://api.culligan.vitotechnologies.com', // Subdominio API
+  'http://api.culligan.vitotechnologies.com'
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
     // Permitir requests sin origin (como mobile apps o Postman)
     if (!origin) return callback(null, true);
+    
+    // Permitir requests desde nginx proxy (mismo servidor)
+    if (!origin || origin === 'null') return callback(null, true);
     
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
@@ -38,7 +43,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Real-IP', 'X-Forwarded-For']
 }));
 
 app.use(express.json());
