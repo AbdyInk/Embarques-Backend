@@ -66,7 +66,8 @@ function cargarUsuarios() {
       // Usuarios por defecto
       usuarios = [
         { id: 1, usuario: 'admin', password: 'admin123', grupo: 'administrador', activo: true, fechaCreacion: new Date().toISOString() },
-        { id: 2, usuario: 'operador', password: 'operador123', grupo: 'operador', activo: true, fechaCreacion: new Date().toISOString() }
+        { id: 2, usuario: 'operador', password: 'operador123', grupo: 'operador', activo: true, fechaCreacion: new Date().toISOString() },
+        { id: 3, usuario: 'onlyscreen', password: 'screen123', grupo: 'onlyscreen', activo: true, fechaCreacion: new Date().toISOString() }
       ];
       guardarUsuarios();
     }
@@ -94,8 +95,8 @@ function validarUsuario(usuario) {
   if (!usuario.password || usuario.password.length < 6) {
     errores.push('La contraseña debe tener al menos 6 caracteres');
   }
-  if (!['operador', 'administrador'].includes(usuario.grupo)) {
-    errores.push('El grupo debe ser operador o administrador');
+  if (!['operador', 'administrador', 'onlyscreen'].includes(usuario.grupo)) {
+    errores.push('El grupo debe ser operador, administrador u onlyscreen');
   }
   if (usuarios.find(u => u.usuario === usuario.usuario && u.id !== usuario.id)) {
     errores.push('Ya existe un usuario con ese nombre');
@@ -120,6 +121,8 @@ app.post('/api/login', (req, res) => {
     expiresIn = '2h'; // Administradores: 2 horas
   } else if (user.grupo === 'operador') {
     expiresIn = '12h'; // Operadores: 12 horas
+  } else if (user.grupo === 'onlyscreen') {
+    expiresIn = '12h'; // OnlyScreen: 12 horas (mismos permisos que operador antes)
   } else {
     expiresIn = '1h'; // Por defecto: 1 hora
   }
@@ -161,6 +164,14 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// Middleware para proteger pantalla de usuarios - solo admin puede verla, operador NO
+function requireAdminForUsers(req, res, next) {
+  if (req.user.grupo !== 'administrador') {
+    return res.status(403).json({ error: 'Solo administradores pueden acceder a la gestión de usuarios' });
+  }
+  next();
+}
+
 // Endpoint para validar token y obtener información del usuario
 app.get('/api/validate-token', autenticarJWT, (req, res) => {
   res.json({ 
@@ -180,8 +191,8 @@ app.get('/api/protegido', autenticarJWT, (req, res) => {
 
 // --- ENDPOINTS CRUD USUARIOS ---
 
-// GET /api/usuarios - Listar todos los usuarios (solo admin)
-app.get('/api/usuarios', autenticarJWT, requireAdmin, (req, res) => {
+// GET /api/usuarios - Listar todos los usuarios (solo admin puede ver pantalla usuarios)
+app.get('/api/usuarios', autenticarJWT, requireAdminForUsers, (req, res) => {
   try {
     // No enviar passwords
     const usuariosSinPassword = usuarios.map(u => ({
@@ -197,8 +208,8 @@ app.get('/api/usuarios', autenticarJWT, requireAdmin, (req, res) => {
   }
 });
 
-// POST /api/usuarios - Crear nuevo usuario (solo admin)
-app.post('/api/usuarios', autenticarJWT, requireAdmin, (req, res) => {
+// POST /api/usuarios - Crear nuevo usuario (solo admin puede acceder a pantalla usuarios)
+app.post('/api/usuarios', autenticarJWT, requireAdminForUsers, (req, res) => {
   try {
     const { usuario, password, grupo } = req.body;
     const nuevoUsuario = {
@@ -219,7 +230,7 @@ app.post('/api/usuarios', autenticarJWT, requireAdmin, (req, res) => {
     guardarUsuarios();
 
     // Registrar en historial
-    historialMovimientos.push({
+    historialMovimientos.unshift({
       fechaHora: Date.now(),
       anden: null,
       tipo: 'usuario',
@@ -227,6 +238,7 @@ app.post('/api/usuarios', autenticarJWT, requireAdmin, (req, res) => {
       usuario: req.user.usuario,
       info: `Usuario ${usuario} creado con grupo ${grupo}`
     });
+    if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
 
     res.status(201).json({ 
       mensaje: 'Usuario creado exitosamente',
@@ -243,14 +255,14 @@ app.post('/api/usuarios', autenticarJWT, requireAdmin, (req, res) => {
   }
 });
 
-// PUT /api/usuarios/:id - Actualizar usuario (solo admin)
-app.put('/api/usuarios/:id', autenticarJWT, requireAdmin, (req, res) => {
+// PUT /api/usuarios/:id - Actualizar usuario (solo admin puede acceder a pantalla usuarios)
+app.put('/api/usuarios/:id', autenticarJWT, requireAdminForUsers, (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const { usuario, password, grupo, activo } = req.body;
     
     // Proteger usuarios por defecto
-    if (id === 1 || id === 2) {
+    if (id === 1 || id === 2 || id === 3) {
       return res.status(403).json({ error: 'No se pueden modificar los usuarios por defecto del sistema' });
     }
     
@@ -282,7 +294,7 @@ app.put('/api/usuarios/:id', autenticarJWT, requireAdmin, (req, res) => {
     guardarUsuarios();
 
     // Registrar en historial
-    historialMovimientos.push({
+    historialMovimientos.unshift({
       fechaHora: Date.now(),
       anden: null,
       tipo: 'usuario',
@@ -290,6 +302,7 @@ app.put('/api/usuarios/:id', autenticarJWT, requireAdmin, (req, res) => {
       usuario: req.user.usuario,
       info: `Usuario ${usuarioActualizado.usuario} actualizado`
     });
+    if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
 
     res.json({
       mensaje: 'Usuario actualizado exitosamente',
@@ -306,13 +319,13 @@ app.put('/api/usuarios/:id', autenticarJWT, requireAdmin, (req, res) => {
   }
 });
 
-// DELETE /api/usuarios/:id - Eliminar usuario (solo admin)
-app.delete('/api/usuarios/:id', autenticarJWT, requireAdmin, (req, res) => {
+// DELETE /api/usuarios/:id - Eliminar usuario (solo admin puede acceder a pantalla usuarios)
+app.delete('/api/usuarios/:id', autenticarJWT, requireAdminForUsers, (req, res) => {
   try {
     const id = parseInt(req.params.id);
     
     // Proteger usuarios por defecto
-    if (id === 1 || id === 2) {
+    if (id === 1 || id === 2 || id === 3) {
       return res.status(403).json({ error: 'No se pueden eliminar los usuarios por defecto del sistema' });
     }
     
@@ -331,7 +344,7 @@ app.delete('/api/usuarios/:id', autenticarJWT, requireAdmin, (req, res) => {
     guardarUsuarios();
 
     // Registrar en historial
-    historialMovimientos.push({
+    historialMovimientos.unshift({
       fechaHora: Date.now(),
       anden: null,
       tipo: 'usuario',
@@ -339,6 +352,7 @@ app.delete('/api/usuarios/:id', autenticarJWT, requireAdmin, (req, res) => {
       usuario: req.user.usuario,
       info: `Usuario ${nombreUsuario} eliminado del sistema`
     });
+    if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
 
     res.json({ mensaje: 'Usuario eliminado exitosamente' });
   } catch (error) {
@@ -523,12 +537,12 @@ andenes.forEach((anden, idx) => {
       });
       if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
       console.log(`Andén ${anden.id} reseteado automáticamente a 'Disponible' tras inicio del servidor.`);
-    }, 1 * 60 * 1000);
+    }, 5 * 60 * 1000); // 5 minutos como debe ser
   }
 });
 // ...existing code...
-// Endpoint para editar datos de un andén (para /cuadricula)
-app.put('/api/andenes/:id', (req, res) => {
+// Endpoint para editar datos de un andén (para /cuadricula) - requiere autenticación
+app.put('/api/andenes/:id', autenticarJWT, (req, res) => {
   const idx = andenes.findIndex(a => a.id === Number(req.params.id));
   if (idx === -1) return res.status(404).json({ error: 'Andén no encontrado' });
   const { status, destino, numeroCajas, limiteCamion } = req.body;
@@ -536,12 +550,46 @@ app.put('/api/andenes/:id', (req, res) => {
   if (status !== undefined && typeof status === 'string') {
     andenes[idx].status = status;
     cambio = true;
+    
+    // Si se marcó manualmente como "Embarcado", programar reset automático
+    if (status === 'Embarcado') {
+      andenes[idx].horaEmbarcado = Date.now();
+      andenes[idx].usuarioEmbarca = req.user.usuario; // Usuario real del JWT
+      
+      setTimeout(() => {
+        andenes[idx].pallets = [];
+        andenes[idx].cantidad = 0;
+        andenes[idx].status = 'Disponible';
+        andenes[idx].destino = '';
+        andenes[idx].numeroCajas = 0;
+        andenes[idx].limiteCamion = 0;
+        andenes[idx].ultimaFechaEscaneo = null;
+        andenes[idx].horaInicioEscaneo = null;
+        andenes[idx].horaCompletado = null;
+        andenes[idx].horaDocumentado = null;
+        andenes[idx].horaEmbarcado = null;
+        andenes[idx].usuarioDocumenta = null;
+        andenes[idx].usuarioEmbarca = null;
+        
+        historialMovimientos.unshift({
+          fechaHora: Date.now(),
+          anden: andenes[idx].id,
+          tipo: 'status',
+          codigo: 'Disponible',
+          usuario: 'Sistema',
+          info: 'Reset automático después de cambio manual a Embarcado'
+        });
+        if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
+        console.log(`Andén ${andenes[idx].id} reseteado automáticamente después de cambio manual a Embarcado.`);
+      }, 5 * 60 * 1000); // 5 minutos después del cambio manual
+    }
+    
     historialMovimientos.unshift({
       fechaHora: Date.now(),
       anden: andenes[idx].id,
       tipo: 'status',
       codigo: status,
-      usuario: 'admin',
+      usuario: req.user.usuario, // Usuario real del JWT
       info: 'Cambio manual desde PUT /api/andenes/:id'
     });
   }
@@ -553,7 +601,7 @@ app.put('/api/andenes/:id', (req, res) => {
       anden: andenes[idx].id,
       tipo: 'destino',
       codigo: destino,
-      usuario: 'admin',
+      usuario: req.user.usuario, // Usuario real del JWT
       info: 'Cambio manual desde PUT /api/andenes/:id'
     });
   }
@@ -565,7 +613,7 @@ app.put('/api/andenes/:id', (req, res) => {
       anden: andenes[idx].id,
       tipo: 'numeroCajas',
       codigo: numeroCajas,
-      usuario: 'admin',
+      usuario: req.user.usuario, // Usuario real del JWT
       info: 'Cambio manual desde PUT /api/andenes/:id'
     });
   }
@@ -578,7 +626,7 @@ app.put('/api/andenes/:id', (req, res) => {
         anden: andenes[idx].id,
         tipo: 'limiteCamion',
         codigo: limiteCamion,
-        usuario: 'admin',
+        usuario: req.user.usuario, // Usuario real del JWT
         info: 'Cambio manual desde PUT /api/andenes/:id'
       });
     }
@@ -624,7 +672,8 @@ app.post('/api/scan', (req, res) => {
   if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
   // Guardar cambio de status en historial global si corresponde
   let nuevoStatus = '';
-  if (defaultAnden.cantidad >= 30) {
+  const limiteAndenScan = defaultAnden.limiteCamion || 30;
+  if (defaultAnden.cantidad >= limiteAndenScan) {
     defaultAnden.status = 'Completado';
     nuevoStatus = 'Completado';
   } else if (defaultAnden.cantidad > 0) {
@@ -666,7 +715,8 @@ app.post('/', (req, res) => {
   const idx = andenes.findIndex(a => a.id === Number(anden));
   if (idx === -1) return res.status(404).json({ error: 'Anden no encontrado' });
     const andenObj = andenes[idx];
-    if (andenObj.cantidad >= 30) {
+    const limiteAndenObj = andenObj.limiteCamion || 30;
+    if (andenObj.cantidad >= limiteAndenObj) {
       // Rechazar escaneo extra
       if (andenObj.status !== 'Limite ya alcanzado') {
         andenObj.status = 'Limite ya alcanzado';
@@ -692,7 +742,8 @@ app.post('/', (req, res) => {
     andenObj.pallets.push(pallet);
     andenObj.cantidad = andenObj.pallets.length;
     andenObj.ultimaFechaEscaneo = pallet.timestamp;
-    if (andenObj.cantidad >= 30) {
+    const limiteAndenObj2 = andenObj.limiteCamion || 30;
+    if (andenObj.cantidad >= limiteAndenObj2) {
       andenObj.status = 'Completado';
     } else if (andenObj.cantidad > 0) {
       andenObj.status = 'Cargando';
@@ -812,7 +863,8 @@ const tcpServer = net.createServer(socket => {
     // Unificar estructura del pallet integrado por TCP (JSON o texto plano)
     if ((tipo === 'JSON' && json != null) || tipo === 'texto plano') {
       const anden = andenes[tcpAndenIndex];
-      if (anden.cantidad >= 30) {
+      const limiteTcp = anden.limiteCamion || 30;
+      if (anden.cantidad >= limiteTcp) {
         // Rechazar escaneo extra
         if (anden.status !== 'Limite ya alcanzado') {
           anden.status = 'Limite ya alcanzado';
@@ -844,7 +896,8 @@ const tcpServer = net.createServer(socket => {
       anden.pallets.push(pallet);
       anden.cantidad = anden.pallets.length;
       anden.ultimaFechaEscaneo = pallet.timestamp;
-      if (anden.cantidad >= 30) {
+      const limiteTcp2 = anden.limiteCamion || 30;
+      if (anden.cantidad >= limiteTcp2) {
         anden.status = 'Completado';
       } else if (anden.cantidad > 0) {
         anden.status = 'Cargando';
@@ -943,9 +996,21 @@ app.post('/api/tcp', (req, res) => {
     return res.status(400).json({ error: 'No hay andenes disponibles o andén inválido' });
   }
   
-  // Verificar límite del andén
-  if (andenes[targetIndex].cantidad >= 30) {
-    return res.status(400).json({ error: `Andén ${targetIndex + 1} ha alcanzado el límite de 30 pallets` });
+  // Verificar si el pallet ya existe en este andén
+  const palletExistente = andenes[targetIndex].pallets.find(p => p.numeroParte === codigo);
+  if (palletExistente) {
+    return res.status(400).json({ 
+      error: `El número de parte ${codigo} ya está registrado en el Andén ${targetIndex + 1}`,
+      pallet: palletExistente 
+    });
+  }
+  
+  // Verificar límite del andén (usar limiteCamion específico del andén)
+  const limiteAnden = andenes[targetIndex].limiteCamion || 30; // Fallback a 30 si no está definido
+  if (andenes[targetIndex].cantidad >= limiteAnden) {
+    return res.status(400).json({ 
+      error: `Andén ${targetIndex + 1} ha alcanzado el límite de ${limiteAnden} pallets` 
+    });
   }
   
   // Agregar pallet al andén
@@ -969,14 +1034,26 @@ app.post('/api/tcp', (req, res) => {
     historialEscaneos[andenId] = historialEscaneos[andenId].slice(0, 30);
   }
   
-  // Actualizar estado del andén
-  if (andenes[targetIndex].cantidad >= 30) {
+  // Actualizar estado del andén (usar limiteCamion específico)
+  const limiteAnden = andenes[targetIndex].limiteCamion || 30;
+  if (andenes[targetIndex].cantidad >= limiteAnden) {
     andenes[targetIndex].status = 'Completado';
   } else if (andenes[targetIndex].cantidad > 0) {
     andenes[targetIndex].status = 'Cargando';
   } else {
     andenes[targetIndex].status = 'En espera';
   }
+  
+  // Agregar al historial de movimientos
+  historialMovimientos.unshift({
+    fechaHora: pallet.timestamp,
+    anden: andenNumero,
+    tipo: 'escaneo',
+    codigo: pallet.codigoPallet,
+    usuario: 'Escaneo',
+    info: `Escaneo TCP registrado en Andén ${andenNumero}`
+  });
+  if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
   
   const andenNumero = andenTarget || (targetIndex + 1);
   console.log(`✅ Pallet integrado en Andén ${andenNumero}:`, pallet);
@@ -1108,42 +1185,18 @@ app.post('/api/andenes/:id/documentar', (req, res) => {
   andenes[idx].status = 'Documentado';
   andenes[idx].horaDocumentado = Date.now();
   andenes[idx].usuarioDocumenta = usuario;
-  // Programar cambio a embarcado en 5 minutos
-  setTimeout(() => {
-    andenes[idx].status = 'Embarcado';
-    andenes[idx].horaEmbarcado = Date.now();
-    andenes[idx].usuarioEmbarca = usuario;
-    // Guardar ciclo en historial y limpiar andén
-    const ciclo = {
-      id: andenes[idx].id,
-      destino: andenes[idx].destino,
-      numeroCajas: andenes[idx].numeroCajas,
-      pallets: [...andenes[idx].pallets],
-      horaInicioEscaneo: andenes[idx].horaInicioEscaneo,
-      horaCompletado: andenes[idx].horaCompletado,
-      horaDocumentado: andenes[idx].horaDocumentado,
-      horaEmbarcado: andenes[idx].horaEmbarcado,
-      usuarioDocumenta: andenes[idx].usuarioDocumenta,
-      usuarioEmbarca: andenes[idx].usuarioEmbarca
-    };
-    historialCiclos.push(ciclo);
-    try {
-      fs.writeFileSync(HISTORIAL_PATH, JSON.stringify(historialCiclos, null, 2));
-    } catch(e) { console.error('Error guardando historial:', e); }
-    // Limpiar andén para nuevo ciclo
-    andenes[idx].pallets = [];
-    andenes[idx].cantidad = 0;
-    andenes[idx].status = 'En espera';
-    andenes[idx].destino = '';
-    andenes[idx].numeroCajas = 0;
-    andenes[idx].ultimaFechaEscaneo = null;
-    andenes[idx].horaInicioEscaneo = null;
-    andenes[idx].horaCompletado = null;
-    andenes[idx].horaDocumentado = null;
-    andenes[idx].horaEmbarcado = null;
-    andenes[idx].usuarioDocumenta = null;
-    andenes[idx].usuarioEmbarca = null;
-  }, 5 * 60 * 1000);
+  
+  // Agregar al historial el cambio de estado
+  historialMovimientos.unshift({
+    fechaHora: Date.now(),
+    anden: andenes[idx].id,
+    tipo: 'status',
+    codigo: 'Documentado',
+    usuario: usuario,
+    info: 'Documentado por usuario - embarque debe ser manual'
+  });
+  if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
+  
   res.json({ success: true });
 });
 
@@ -1172,7 +1225,7 @@ app.post('/api/andenes/:id/embarcar', (req, res) => {
   try {
     fs.writeFileSync(HISTORIAL_PATH, JSON.stringify(historialCiclos, null, 2));
   } catch(e) { console.error('Error guardando historial:', e); }
-  // Programar reset automático a 'Disponible' en 1 minuto (pruebas)
+  // Programar reset automático a 'Disponible' en 5 minutos después del embarque
   setTimeout(() => {
     andenes[idx].pallets = [];
     andenes[idx].cantidad = 0;
@@ -1187,7 +1240,19 @@ app.post('/api/andenes/:id/embarcar', (req, res) => {
     andenes[idx].horaEmbarcado = null;
     andenes[idx].usuarioDocumenta = null;
     andenes[idx].usuarioEmbarca = null;
-  }, 15 * 60 * 1000);
+    
+    // Agregar al historial el cambio a Disponible
+    historialMovimientos.unshift({
+      fechaHora: Date.now(),
+      anden: andenes[idx].id,
+      tipo: 'status',
+      codigo: 'Disponible',
+      usuario: 'Sistema',
+      info: 'Reset automático después de embarque manual'
+    });
+    if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
+    console.log(`Andén ${andenes[idx].id} reseteado automáticamente a 'Disponible' después de embarque manual.`);
+  }, 5 * 60 * 1000); // 5 minutos después del embarque manual
   res.json({ success: true });
 });
 // Endpoint para consultar historial completo de ciclos por andén
