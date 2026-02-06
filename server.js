@@ -1035,7 +1035,6 @@ app.post('/api/tcp', (req, res) => {
   }
   
   // Actualizar estado del andén (usar limiteCamion específico)
-  const limiteAnden = andenes[targetIndex].limiteCamion || 30;
   if (andenes[targetIndex].cantidad >= limiteAnden) {
     andenes[targetIndex].status = 'Completado';
   } else if (andenes[targetIndex].cantidad > 0) {
