@@ -896,50 +896,98 @@ tcpServer.listen(TCP_PORT, '0.0.0.0', () => {
 // --- TCP plano ---
 app.post('/api/tcp', (req, res) => {
   let body = req.body;
-  let json = null;
-  // Si recibimos texto plano, transformar a JSON con formato estándar
-  if (typeof body === 'string') {
-    // Si es solo números o texto, crear objeto igual que el flujo JSON
-    json = { codigoPallet: body.trim(), ubicacion: 'A1' };
+  let codigo = '';
+  let andenTarget = null;
+  
+  // Manejar el nuevo formato con andén específico
+  if (typeof body === 'object' && body.codigo && body.anden) {
+    codigo = body.codigo.trim();
+    andenTarget = parseInt(body.anden);
+    console.log(`TCP recibido - Código: "${codigo}", Andén destino: ${andenTarget}`);
+  } else if (typeof body === 'string') {
+    // Formato antiguo (solo texto)
+    codigo = body.trim();
+    console.log(`TCP recibido (formato antiguo) - Código: "${codigo}"`);
   } else {
-    json = body;
+    return res.status(400).json({ error: 'Formato de datos inválido' });
   }
-  // Unificar registro
+  
+  if (!codigo) {
+    return res.status(400).json({ error: 'Código vacío' });
+  }
+  
+  // Crear el pallet
   let pallet = {
     id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
     ubicacion: 'A1',
-    numeroParte: '-',
-    codigoPallet: '',
+    numeroParte: codigo,
+    codigoPallet: codigo,
     timestamp: Date.now()
   };
-  if (typeof json === 'object' && !Array.isArray(json)) {
-    pallet.ubicacion = json.ubicacion || 'A1';
-    pallet.codigoPallet = json.codigoPallet || json.codigo || json.barcode || '-';
-    pallet.numeroParte = pallet.codigoPallet;
+  
+  let targetIndex = -1;
+  
+  // Si viene andén específico, usarlo; si no, buscar automáticamente
+  if (andenTarget && andenTarget >= 1 && andenTarget <= 6) {
+    targetIndex = andenTarget - 1; // Convertir a índice (1-6 -> 0-5)
+    console.log(`Usando andén especificado: ${andenTarget}`);
   } else {
-    const codigo = String(json).trim();
-    pallet.codigoPallet = codigo !== '' ? codigo : '-';
-    pallet.numeroParte = pallet.codigoPallet;
+    // Buscar el primer andén disponible (comportamiento anterior)
+    targetIndex = andenes.findIndex(a => a.status !== 'Completado' && a.status !== 'Limite ya alcanzado');
+    if (targetIndex !== -1) {
+      console.log(`Usando andén automático: ${targetIndex + 1}`);
+    }
   }
-  // Guardar en el primer andén disponible
-  const idx = andenes.findIndex(a => a.status !== 'Completado' && a.status !== 'Limite ya alcanzado');
-  if (idx === -1) return res.status(400).json({ error: 'No hay andenes disponibles' });
-  pallet.ubicacion = `A${andenes[idx].id}`;
-  andenes[idx].pallets.push(pallet);
-  andenes[idx].cantidad = andenes[idx].pallets.length;
-  andenes[idx].ultimaFechaEscaneo = pallet.timestamp;
-  if (!historialEscaneos[andenes[idx].id]) historialEscaneos[andenes[idx].id] = [];
-  historialEscaneos[andenes[idx].id].unshift({ id: pallet.id, ubicacion: pallet.ubicacion, numeroParte: pallet.numeroParte, codigoPallet: pallet.codigoPallet, timestamp: pallet.timestamp });
-  if (historialEscaneos[andenes[idx].id].length > 30) historialEscaneos[andenes[idx].id] = historialEscaneos[andenes[idx].id].slice(0, 30);
-  if (andenes[idx].cantidad >= 30) {
-    andenes[idx].status = 'Completado';
-  } else if (andenes[idx].cantidad > 0) {
-    andenes[idx].status = 'Cargando';
+  
+  if (targetIndex === -1 || !andenes[targetIndex]) {
+    return res.status(400).json({ error: 'No hay andenes disponibles o andén inválido' });
+  }
+  
+  // Verificar límite del andén
+  if (andenes[targetIndex].cantidad >= 30) {
+    return res.status(400).json({ error: `Andén ${targetIndex + 1} ha alcanzado el límite de 30 pallets` });
+  }
+  
+  // Agregar pallet al andén
+  pallet.ubicacion = `A${andenTarget || (targetIndex + 1)}`; // Usar número de andén correcto
+  andenes[targetIndex].pallets.push(pallet);
+  andenes[targetIndex].cantidad = andenes[targetIndex].pallets.length;
+  andenes[targetIndex].ultimaFechaEscaneo = pallet.timestamp;
+  
+  // Actualizar historial
+  const andenId = andenTarget || andenes[targetIndex].id;
+  if (!historialEscaneos[andenId]) historialEscaneos[andenId] = [];
+  historialEscaneos[andenId].unshift({ 
+    id: pallet.id, 
+    ubicacion: pallet.ubicacion, 
+    numeroParte: pallet.numeroParte, 
+    codigoPallet: pallet.codigoPallet, 
+    timestamp: pallet.timestamp 
+  });
+  
+  if (historialEscaneos[andenId].length > 30) {
+    historialEscaneos[andenId] = historialEscaneos[andenId].slice(0, 30);
+  }
+  
+  // Actualizar estado del andén
+  if (andenes[targetIndex].cantidad >= 30) {
+    andenes[targetIndex].status = 'Completado';
+  } else if (andenes[targetIndex].cantidad > 0) {
+    andenes[targetIndex].status = 'Cargando';
   } else {
-    andenes[idx].status = 'En espera';
+    andenes[targetIndex].status = 'En espera';
   }
-  console.log(`Pallet integrado en Anden ${andenes[idx].id}:`, pallet);
-  return res.json({ success: true, info: 'TCP registrado', anden: andenes[idx].id, pallet });
+  
+  const andenNumero = andenTarget || (targetIndex + 1);
+  console.log(`✅ Pallet integrado en Andén ${andenNumero}:`, pallet);
+  
+  return res.json({ 
+    success: true, 
+    info: 'TCP registrado con andén específico', 
+    anden: andenNumero, 
+    pallet,
+    metodo: andenTarget ? 'específico' : 'automático'
+  });
 });
 
 // Endpoint para cambiar destino
