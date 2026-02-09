@@ -1164,15 +1164,6 @@ app.post('/api/tcp', (req, res) => {
     return res.status(400).json({ error: 'No hay andenes disponibles o andén inválido' });
   }
   
-  // Verificar si el pallet ya existe en este andén
-  const palletExistente = andenes[targetIndex].pallets.find(p => p.numeroParte === codigo);
-  if (palletExistente) {
-    return res.status(400).json({ 
-      error: `El número de parte ${codigo} ya está registrado en el Andén ${targetIndex + 1}`,
-      pallet: palletExistente 
-    });
-  }
-  
   // Verificar límite del andén (usar limiteCamion específico del andén)
   const limiteAnden = andenes[targetIndex].limiteCamion || 30; // Fallback a 30 si no está definido
   if (andenes[targetIndex].cantidad >= limiteAnden) {
