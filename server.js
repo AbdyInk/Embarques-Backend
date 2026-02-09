@@ -1,9 +1,109 @@
 // --- CONFIGURACIÓN DE DESARROLLO ---
 const USE_DEV_DATA = true; // Cambiar a true para datos de prueba/desarrollo
 
-// --- Historial completo de ciclos por anden (simulado en archivo) ---
+// --- Persistencia de datos ---
 const fs = require('fs');
-const HISTORIAL_PATH = __dirname + '/andenesHistorial.json';
+const path = require('path');
+
+// Rutas de archivos de datos
+const DATA_DIR = path.join(__dirname, 'data');
+const HISTORIAL_PATH = path.join(DATA_DIR, 'andenesHistorial.json');
+const ANDENES_PATH = path.join(DATA_DIR, 'andenes.json');
+const HISTORIAL_MOVIMIENTOS_PATH = path.join(DATA_DIR, 'historialMovimientos.json');
+const HISTORIAL_ESCANEOS_PATH = path.join(DATA_DIR, 'historialEscaneos.json');
+const REPORTES_PATH = path.join(DATA_DIR, 'reportesCompletos.json');
+
+// Crear directorio de datos si no existe
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  console.log('📁 Directorio de datos creado: ' + DATA_DIR);
+}
+
+// Funciones de persistencia
+function guardarDatos() {
+  try {
+    const timestamp = new Date().toISOString();
+    
+    // Guardar andenes con timestamp
+    const andenesData = {
+      timestamp,
+      version: '1.0',
+      andenes: andenes
+    };
+    fs.writeFileSync(ANDENES_PATH, JSON.stringify(andenesData, null, 2));
+    
+    // Guardar historial de movimientos
+    const movimientosData = {
+      timestamp,
+      version: '1.0',
+      movimientos: historialMovimientos
+    };
+    fs.writeFileSync(HISTORIAL_MOVIMIENTOS_PATH, JSON.stringify(movimientosData, null, 2));
+    
+    // Guardar historial de escaneos
+    const escaneosData = {
+      timestamp,
+      version: '1.0',
+      escaneos: historialEscaneos
+    };
+    fs.writeFileSync(HISTORIAL_ESCANEOS_PATH, JSON.stringify(escaneosData, null, 2));
+    
+    // Guardar reporte completo para análisis futuro
+    const reporteCompleto = {
+      timestamp,
+      version: '1.0',
+      resumen: {
+        totalAndenes: andenes.length,
+        andenesActivos: andenes.filter(a => a.cantidad > 0).length,
+        totalPallets: andenes.reduce((sum, a) => sum + a.cantidad, 0),
+        totalMovimientos: historialMovimientos.length
+      },
+      andenes: andenes,
+      movimientos: historialMovimientos,
+      escaneos: historialEscaneos
+    };
+    fs.writeFileSync(REPORTES_PATH, JSON.stringify(reporteCompleto, null, 2));
+    
+    console.log(`💾 Datos guardados exitosamente: ${timestamp}`);
+  } catch (error) {
+    console.error('❌ Error guardando datos:', error.message);
+  }
+}
+
+function cargarDatos() {
+  try {
+    // Cargar andenes
+    if (fs.existsSync(ANDENES_PATH)) {
+      const andenesData = JSON.parse(fs.readFileSync(ANDENES_PATH, 'utf8'));
+      if (andenesData.andenes && Array.isArray(andenesData.andenes)) {
+        andenes = andenesData.andenes;
+        console.log(`📂 Andenes cargados: ${andenes.length} andenes`);
+      }
+    }
+    
+    // Cargar historial de movimientos
+    if (fs.existsSync(HISTORIAL_MOVIMIENTOS_PATH)) {
+      const movimientosData = JSON.parse(fs.readFileSync(HISTORIAL_MOVIMIENTOS_PATH, 'utf8'));
+      if (movimientosData.movimientos && Array.isArray(movimientosData.movimientos)) {
+        historialMovimientos = movimientosData.movimientos;
+        console.log(`📂 Movimientos cargados: ${historialMovimientos.length} registros`);
+      }
+    }
+    
+    // Cargar historial de escaneos
+    if (fs.existsSync(HISTORIAL_ESCANEOS_PATH)) {
+      const escaneosData = JSON.parse(fs.readFileSync(HISTORIAL_ESCANEOS_PATH, 'utf8'));
+      if (escaneosData.escaneos && typeof escaneosData.escaneos === 'object') {
+        historialEscaneos = escaneosData.escaneos;
+        console.log(`📂 Escaneos cargados: ${Object.keys(historialEscaneos).length} andenes`);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Error cargando datos:', error.message);
+  }
+}
+
+// Cargar historial de ciclos (código existente)
 let historialCiclos = [];
 try {
   if (fs.existsSync(HISTORIAL_PATH)) {
@@ -383,7 +483,7 @@ app.get('/api/usuarios/me', autenticarJWT, (req, res) => {
 // --- FIN ENDPOINTS USUARIOS ---
 
 // Historial de escaneos por anden (máximo 30 por anden)
-const historialEscaneos = USE_DEV_DATA ? {
+let historialEscaneos = USE_DEV_DATA ? {
   // En modo desarrollo, inicializar con algunos escaneos de ejemplo
   1: [
     { id: 'p1', ubicacion: 'A1', numeroParte: 'P-DEMO1', codigoPallet: 'CP-DEMO1', timestamp: Date.now() - 1000 * 60 * 5 },
@@ -510,6 +610,10 @@ let andenes = USE_DEV_DATA ? [
   { id: 6, pallets: [], numeroCajas: 0, cantidad: 0, limiteCamion: 0, status: 'Disponible', destino: '', ultimaFechaEscaneo: null }
 ];
 
+// Cargar datos persistentes antes de iniciar operaciones
+console.log('📂 Cargando datos persistentes...');
+cargarDatos();
+
 // Al iniciar el servidor, programar reset para cualquier andén en 'Embarcado'
 andenes.forEach((anden, idx) => {
   if (anden.status === 'Embarcado') {
@@ -632,6 +736,10 @@ app.put('/api/andenes/:id', autenticarJWT, (req, res) => {
     }
   }
   if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
+  
+  // Guardar datos después de cambios importantes
+  guardarDatos();
+  
   res.json({ success: true, anden: andenes[idx] });
 });
 app.post('/api/scan', (req, res) => {
@@ -691,6 +799,10 @@ app.post('/api/scan', (req, res) => {
     usuario: 'Sistema',
     info: `Cambio de status por escaneo en /api/scan`
   });
+  
+  // Guardar datos después del escaneo
+  guardarDatos();
+  
   res.json({ success: true });
 });
 
@@ -791,6 +903,19 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 === CULLIGAN BACKEND INICIADO ===`);
   console.log(`📊 Modo: ${USE_DEV_DATA ? 'DESARROLLO' : 'PRODUCCIÓN (PRUEBAS)'}`);
   console.log(`🌐 Puerto HTTP: ${PORT} (todas las interfaces)`);
+  console.log(`💾 Persistencia: ACTIVADA`);
+  console.log(`📁 Directorio de datos: ${DATA_DIR}`);
+  console.log(`📈 Archivos de datos:`);
+  console.log(`   - Andenes: ${path.basename(ANDENES_PATH)}`);
+  console.log(`   - Movimientos: ${path.basename(HISTORIAL_MOVIMIENTOS_PATH)}`);
+  console.log(`   - Escaneos: ${path.basename(HISTORIAL_ESCANEOS_PATH)}`);
+  console.log(`   - Reportes completos: ${path.basename(REPORTES_PATH)}`);
+  
+  // Programar guardado automático cada 5 minutos
+  setInterval(() => {
+    console.log('🔄 Guardado automático de datos...');
+    guardarDatos();
+  }, 5 * 60 * 1000); // 5 minutos
   
   // Mostrar IP local para pruebas
   const os = require('os');
@@ -950,16 +1075,25 @@ tcpServer.listen(TCP_PORT, '0.0.0.0', () => {
 app.post('/api/tcp', (req, res) => {
   let body = req.body;
   let codigo = '';
+  let cajas = 0;
   let andenTarget = null;
   
-  // Manejar el nuevo formato con andén específico
-  if (typeof body === 'object' && body.codigo && body.anden) {
+  // Manejar el nuevo formato con cajas y andén específico
+  if (typeof body === 'object' && body.codigo && body.cajas && body.anden) {
     codigo = body.codigo.trim();
+    cajas = parseInt(body.cajas) || 0;
     andenTarget = parseInt(body.anden);
-    console.log(`TCP recibido - Código: "${codigo}", Andén destino: ${andenTarget}`);
+    console.log(`TCP recibido - Código: "${codigo}", Cajas: ${cajas}, Andén destino: ${andenTarget}`);
+  } else if (typeof body === 'object' && body.codigo && body.anden) {
+    // Formato anterior (sin cajas) - mantener compatibilidad
+    codigo = body.codigo.trim();
+    cajas = 0;
+    andenTarget = parseInt(body.anden);
+    console.log(`TCP recibido (formato sin cajas) - Código: "${codigo}", Andén destino: ${andenTarget}`);
   } else if (typeof body === 'string') {
-    // Formato antiguo (solo texto)
+    // Formato muy antiguo (solo texto)
     codigo = body.trim();
+    cajas = 0;
     console.log(`TCP recibido (formato antiguo) - Código: "${codigo}"`);
   } else {
     return res.status(400).json({ error: 'Formato de datos inválido' });
@@ -975,6 +1109,7 @@ app.post('/api/tcp', (req, res) => {
     ubicacion: 'A1',
     numeroParte: codigo,
     codigoPallet: codigo,
+    numeroCajas: cajas,
     timestamp: Date.now()
   };
   
@@ -1043,24 +1178,34 @@ app.post('/api/tcp', (req, res) => {
     andenes[targetIndex].status = 'En espera';
   }
   
-  // Agregar al historial de movimientos
+  // Obtener número de andén para logs
+  const andenNumero = andenTarget || (targetIndex + 1);
+  
+  // Agregar al historial de movimientos con información de cajas
+  const infoMessage = cajas > 0 
+    ? `Escaneo TCP registrado en Andén ${andenNumero} con ${cajas} cajas`
+    : `Escaneo TCP registrado en Andén ${andenNumero}`;
+    
   historialMovimientos.unshift({
     fechaHora: pallet.timestamp,
     anden: andenNumero,
     tipo: 'escaneo',
     codigo: pallet.codigoPallet,
     usuario: 'Escaneo',
-    info: `Escaneo TCP registrado en Andén ${andenNumero}`
+    info: infoMessage
   });
   if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
   
-  const andenNumero = andenTarget || (targetIndex + 1);
   console.log(`✅ Pallet integrado en Andén ${andenNumero}:`, pallet);
+  
+  // Guardar datos después del escaneo TCP
+  guardarDatos();
   
   return res.json({ 
     success: true, 
     info: 'TCP registrado con andén específico', 
     anden: andenNumero, 
+    cajas: cajas,
     pallet,
     metodo: andenTarget ? 'específico' : 'automático'
   });
@@ -1259,4 +1404,190 @@ app.get('/api/andenes/:id/historial', (req, res) => {
   const andenId = Number(req.params.id);
   const historial = historialCiclos.filter(c => c.id === andenId);
   res.json({ historial });
+});
+
+// Endpoint para reportes y estadísticas
+app.get('/api/reportes', (req, res) => {
+  try {
+    const totalPallets = andenes.reduce((sum, a) => sum + a.cantidad, 0);
+    const andenesActivos = andenes.filter(a => a.cantidad > 0).length;
+    
+    // Estadísticas por destino
+    const destinosStats = {};
+    andenes.forEach(anden => {
+      if (anden.destino && anden.cantidad > 0) {
+        destinosStats[anden.destino] = (destinosStats[anden.destino] || 0) + anden.cantidad;
+      }
+    });
+    
+    // Estadísticas de movimientos por tipo
+    const movimientosPorTipo = {};
+    historialMovimientos.forEach(mov => {
+      movimientosPorTipo[mov.tipo] = (movimientosPorTipo[mov.tipo] || 0) + 1;
+    });
+    
+    // Actividad reciente (últimas 24 horas)
+    const hace24h = Date.now() - (24 * 60 * 60 * 1000);
+    const actividadReciente = historialMovimientos.filter(mov => mov.fechaHora >= hace24h);
+    
+    const reporte = {
+      timestamp: new Date().toISOString(),
+      resumen: {
+        totalAndenes: andenes.length,
+        andenesActivos,
+        andenesVacios: andenes.length - andenesActivos,
+        totalPallets,
+        totalMovimientos: historialMovimientos.length,
+        actividadReciente: actividadReciente.length
+      },
+      estadisticas: {
+        destinosStats,
+        movimientosPorTipo,
+        promedioTarimas: Math.round(totalPallets / andenes.length)
+      },
+      andenes: andenes.map(a => ({
+        id: a.id,
+        cantidad: a.cantidad,
+        status: a.status,
+        destino: a.destino,
+        limiteCamion: a.limiteCamion,
+        utilizacion: a.limiteCamion > 0 ? Math.round((a.cantidad / a.limiteCamion) * 100) : 0
+      }))
+    };
+    
+    res.json(reporte);
+  } catch (error) {
+    console.error('Error generando reporte:', error);
+    res.status(500).json({ error: 'Error interno generando reporte' });
+  }
+});
+
+// Endpoint para exportar datos completos (para backups o análisis)
+app.get('/api/export', (req, res) => {
+  try {
+    const exportData = {
+      timestamp: new Date().toISOString(),
+      version: '1.0',
+      exportType: 'complete',
+      data: {
+        andenes,
+        historialMovimientos,
+        historialEscaneos,
+        historialCiclos
+      }
+    };
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="culligan-export-${new Date().toISOString().split('T')[0]}.json"`);
+    res.json(exportData);
+  } catch (error) {
+    console.error('Error exportando datos:', error);
+    res.status(500).json({ error: 'Error interno exportando datos' });
+  }
+});
+
+// Endpoint para remover pallet específico de un andén
+app.delete('/api/andenes/:andenId/pallets/:palletId', autenticarJWT, (req, res) => {
+  try {
+    const andenId = parseInt(req.params.andenId);
+    const palletId = req.params.palletId;
+    
+    // Encontrar el andén
+    const andenIndex = andenes.findIndex(a => a.id === andenId);
+    if (andenIndex === -1) {
+      return res.status(404).json({ error: 'Andén no encontrado' });
+    }
+    
+    const anden = andenes[andenIndex];
+    
+    // Encontrar el pallet
+    const palletIndex = anden.pallets.findIndex(p => p.id === palletId);
+    if (palletIndex === -1) {
+      return res.status(404).json({ error: 'Pallet no encontrado en este andén' });
+    }
+    
+    const palletRemovido = anden.pallets[palletIndex];
+    
+    // Remover el pallet
+    andenes[andenIndex].pallets.splice(palletIndex, 1);
+    andenes[andenIndex].cantidad = andenes[andenIndex].pallets.length;
+    
+    // Actualizar status del andén basado en la nueva cantidad
+    const limiteAnden = andenes[andenIndex].limiteCamion || 30;
+    if (andenes[andenIndex].cantidad === 0) {
+      andenes[andenIndex].status = 'Disponible';
+      andenes[andenIndex].ultimaFechaEscaneo = null;
+    } else if (andenes[andenIndex].cantidad >= limiteAnden) {
+      andenes[andenIndex].status = 'Completado';
+    } else {
+      andenes[andenIndex].status = 'Cargando';
+    }
+    
+    // Actualizar historial de escaneos del andén
+    if (historialEscaneos[andenId]) {
+      const historialIndex = historialEscaneos[andenId].findIndex(h => h.id === palletId);
+      if (historialIndex !== -1) {
+        historialEscaneos[andenId].splice(historialIndex, 1);
+      }
+    }
+    
+    // Registrar en historial de movimientos
+    const infoMessage = palletRemovido.numeroCajas 
+      ? `Pallet ${palletRemovido.numeroParte} (${palletRemovido.numeroCajas} cajas) removido manualmente`
+      : `Pallet ${palletRemovido.numeroParte} removido manualmente`;
+      
+    historialMovimientos.unshift({
+      fechaHora: Date.now(),
+      anden: andenId,
+      tipo: 'remocion',
+      codigo: palletRemovido.numeroParte,
+      usuario: req.user.usuario,
+      info: infoMessage
+    });
+    
+    if (historialMovimientos.length > 100) {
+      historialMovimientos = historialMovimientos.slice(0, 100);
+    }
+    
+    // Guardar datos
+    guardarDatos();
+    
+    console.log(`🗑️ Pallet removido del Andén ${andenId} por ${req.user.usuario}:`, palletRemovido);
+    
+    res.json({ 
+      success: true, 
+      mensaje: 'Pallet removido exitosamente',
+      palletRemovido: {
+        id: palletRemovido.id,
+        numeroParte: palletRemovido.numeroParte,
+        numeroCajas: palletRemovido.numeroCajas || 0
+      },
+      andenActualizado: {
+        id: andenes[andenIndex].id,
+        cantidad: andenes[andenIndex].cantidad,
+        status: andenes[andenIndex].status
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error removiendo pallet:', error);
+    res.status(500).json({ error: 'Error interno removiendo pallet' });
+  }
+});
+
+// Manejo de cierre graceful
+process.on('SIGINT', () => {
+  console.log('\n🛑 Cerrando servidor...');
+  console.log('💾 Guardando datos finales...');
+  guardarDatos();
+  console.log('✅ Datos guardados. ¡Hasta luego!');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Cerrando servidor (SIGTERM)...');
+  console.log('💾 Guardando datos finales...');
+  guardarDatos();
+  console.log('✅ Datos guardados. Servidor cerrado.');
+  process.exit(0);
 });
