@@ -1538,13 +1538,22 @@ app.delete('/api/andenes/:andenId/pallets/:palletId', autenticarJWT, (req, res) 
     
     const anden = andenes[andenIndex];
     
-    // Encontrar el pallet
-    const palletIndex = anden.pallets.findIndex(p => p.id === palletId);
+    // Encontrar el pallet por numeroParte (ya que el frontend envía el numeroParte como palletId)
+    const palletIndex = anden.pallets.findIndex(p => p.numeroParte === palletId || p.id === palletId);
     if (palletIndex === -1) {
       return res.status(404).json({ error: 'Pallet no encontrado en este andén' });
     }
     
     const palletRemovido = anden.pallets[palletIndex];
+    
+    // Verificar que es el último pallet (LIFO - Last In, First Out)
+    const ultimoPalletIndex = anden.pallets.length - 1;
+    if (palletIndex !== ultimoPalletIndex) {
+      return res.status(400).json({ 
+        error: 'Solo se puede remover el último pallet escaneado (LIFO)', 
+        info: 'El último pallet debe ser removido primero' 
+      });
+    }
     
     // Remover el pallet
     andenes[andenIndex].pallets.splice(palletIndex, 1);
