@@ -1,5 +1,5 @@
-// --- CONFIGURACIÓN DE DESARROLLO ---
-const USE_DEV_DATA = true; // Cambiar a true para datos de prueba/desarrollo
+// --- CONFIGURACIÓN DE PRODUCCIÓN ---
+const USE_DEV_DATA = false; // Cambiar a true para datos de prueba/desarrollo
 
 // --- Persistencia de datos ---
 const fs = require('fs');
