@@ -25,3 +25,7 @@ dist-ssr
 andenesHistorial.json
 usuarios.json
 test-connectivity.html
+data/andenes.json
+data/historialEscaneos.json
+data/historialMovimientos.json
+data/reportesCompletos.json

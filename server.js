@@ -722,8 +722,19 @@ app.put('/api/andenes/:id', autenticarJWT, (req, res) => {
     });
   }
   if (limiteCamion !== undefined && !isNaN(Number(limiteCamion))) {
-    if (Number(limiteCamion) !== Number(andenes[idx].limiteCamion)) {
-      andenes[idx].limiteCamion = Number(limiteCamion);
+    const nuevoLimite = Number(limiteCamion);
+    const currentStatus = andenes[idx].status;
+    const currentCantidad = andenes[idx].cantidad || 0;
+    
+    // VALIDACIÓN: En estado "Completado" solo permitir aumentar el límite
+    if (currentStatus === 'Completado' && nuevoLimite < currentCantidad) {
+      return res.status(400).json({ 
+        error: `Estado Completado: No se puede reducir límite por debajo de ${currentCantidad} tarimas escaneadas` 
+      });
+    }
+    
+    if (nuevoLimite !== Number(andenes[idx].limiteCamion)) {
+      andenes[idx].limiteCamion = nuevoLimite;
       cambio = true;
       historialMovimientos.unshift({
         fechaHora: Date.now(),
@@ -731,7 +742,9 @@ app.put('/api/andenes/:id', autenticarJWT, (req, res) => {
         tipo: 'limiteCamion',
         codigo: limiteCamion,
         usuario: req.user.usuario, // Usuario real del JWT
-        info: 'Cambio manual desde PUT /api/andenes/:id'
+        info: currentStatus === 'Completado' 
+          ? 'Cambio manual - Estado Completado (solo aumento permitido)'
+          : 'Cambio manual desde PUT /api/andenes/:id'
       });
     }
   }
@@ -890,7 +903,27 @@ app.get('/api/health', (req, res) => {
 
 // Endpoint para consultar datos desde el frontend
 app.get('/api/andenes', (req, res) => {
-  res.json(andenes);
+  // Filtrar y limpiar datos antes de enviar al frontend
+  const andenesFiltrados = andenes.map(anden => {
+    // Filtrar pallets válidos (no undefined/null y con propiedades requeridas)
+    const palletsValidos = (anden.pallets || []).filter(pallet => 
+      pallet && 
+      typeof pallet === 'object' && 
+      (pallet.numero || pallet.codigoPallet || pallet.id)
+    ).map(pallet => ({
+      ...pallet,
+      // Asegurar que siempre tenga un número identificador
+      numero: pallet.numero || pallet.codigoPallet || pallet.id || 'Sin número'
+    }));
+    
+    return {
+      ...anden,
+      pallets: palletsValidos,
+      cantidad: palletsValidos.length // Actualizar cantidad basada en pallets válidos
+    };
+  });
+  
+  res.json(andenesFiltrados);
 });
 
 // Endpoint global para historial de escaneos de todos los andenes
@@ -1252,14 +1285,28 @@ app.post('/api/andenes/:id/limite', (req, res) => {
   const { limiteCamion } = req.body;
   const idx = andenes.findIndex(a => a.id === Number(req.params.id));
   if (idx === -1) return res.status(404).json({ error: 'Anden no encontrado' });
-  andenes[idx].limiteCamion = limiteCamion;
+  
+  const currentStatus = andenes[idx].status;
+  const currentCantidad = andenes[idx].cantidad || 0;
+  const nuevoLimite = Number(limiteCamion);
+  
+  // VALIDACIÓN: En estado "Completado" solo permitir aumentar el límite
+  if (currentStatus === 'Completado' && nuevoLimite < currentCantidad) {
+    return res.status(400).json({ 
+      error: `Estado Completado: No se puede reducir límite por debajo de ${currentCantidad} tarimas escaneadas` 
+    });
+  }
+  
+  andenes[idx].limiteCamion = nuevoLimite;
   historialMovimientos.unshift({
     fechaHora: Date.now(),
     anden: andenes[idx].id,
     tipo: 'limiteCamion',
     codigo: limiteCamion,
     usuario: 'admin',
-    info: 'Cambio de límite de tarimas en /api/andenes/:id/limite'
+    info: currentStatus === 'Completado' 
+      ? 'Cambio de límite - Estado Completado (solo aumento permitido)'
+      : 'Cambio de límite de tarimas en /api/andenes/:id/limite'
   });
   if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
   res.json({ success: true });
