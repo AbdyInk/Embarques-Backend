@@ -1437,11 +1437,217 @@ app.post('/api/andenes/:id/embarcar', (req, res) => {
   }, 5 * 60 * 1000); // 5 minutos después del embarque manual
   res.json({ success: true });
 });
+
+// Endpoint para VACIAR ANDÉN - Solo para usuario "admin"
+app.post('/api/andenes/:id/vaciar', autenticarJWT, (req, res) => {
+  try {
+    // Verificar que el usuario sea específicamente "admin"
+    if (req.user.usuario !== 'admin') {
+      return res.status(403).json({ 
+        error: 'Acceso denegado. Solo el usuario "admin" puede vaciar andenes.' 
+      });
+    }
+
+    const andenId = Number(req.params.id);
+    const { razon } = req.body;
+    
+    if (!razon || !razon.trim()) {
+      return res.status(400).json({ error: 'La razón es obligatoria para vaciar el andén' });
+    }
+
+    const idx = andenes.findIndex(a => a.id === andenId);
+    if (idx === -1) {
+      return res.status(404).json({ error: 'Andén no encontrado' });
+    }
+
+    const anden = andenes[idx];
+    const palletsActivos = anden.pallets.filter(p => p && p.numero);
+    
+    if (palletsActivos.length === 0) {
+      return res.status(400).json({ error: 'El andén ya está vacío' });
+    }
+
+    // Crear registro de vaciado en historial de ciclos
+    const cicloVaciado = {
+      id: anden.id,
+      destino: anden.destino || 'N/A',
+      numeroCajas: anden.numeroCajas || 0,
+      pallets: [...palletsActivos], // Copia de los pallets actuales
+      horaInicioEscaneo: anden.horaInicioEscaneo,
+      horaCompletado: anden.horaCompletado,
+      horaDocumentado: anden.horaDocumentado,
+      horaEmbarcado: Date.now(), // Timestamp del vaciado
+      horaVaciado: Date.now(), // Timestamp específico del vaciado
+      usuarioDocumenta: anden.usuarioDocumenta,
+      usuarioEmbarca: req.user.usuario, // Usuario que vació (admin)
+      usuarioVacia: req.user.usuario, // Campo específico para vaciado
+      razonVaciado: razon.trim(), // Razón del vaciado
+      tipoOperacion: 'VACIADO_ADMIN', // Tipo especial para distinguir de embarques normales
+      estadoAnterior: anden.status // Estado antes del vaciado
+    };
+
+    // Agregar al historial de ciclos
+    historialCiclos.push(cicloVaciado);
+
+    // Crear movimientos individuales para cada pallet
+    palletsActivos.forEach(pallet => {
+      historialMovimientos.unshift({
+        id: Date.now() + Math.random(),
+        timestamp: Date.now(),
+        anden: andenId,
+        tipo: 'vaciado_admin',
+        codigo: pallet.numero,
+        usuario: req.user.usuario,
+        info: `Andén vaciado por admin - Razón: ${razon.trim()}`,
+        cajas: pallet.cajas,
+        razonVaciado: razon.trim(),
+        tipoOperacion: 'VACIADO_ADMIN'
+      });
+    });
+
+    // Registrar el vaciado como movimiento del andén
+    historialMovimientos.unshift({
+      id: Date.now() + Math.random(),
+      timestamp: Date.now(),
+      anden: andenId,
+      tipo: 'anden_vaciado',
+      codigo: `Andén ${andenId}`,
+      usuario: req.user.usuario,
+      info: `Andén vaciado completamente - ${palletsActivos.length} pallet(s) - Razón: ${razon.trim()}`,
+      palletsMovidos: palletsActivos.length,
+      razonVaciado: razon.trim(),
+      tipoOperacion: 'VACIADO_ADMIN'
+    });
+
+    // Resetear el andén completamente
+    andenes[idx] = {
+      ...anden,
+      pallets: [],
+      cantidad: 0,
+      status: 'Disponible',
+      destino: '',
+      numeroCajas: 0,
+      limiteCamion: 0,
+      ultimaFechaEscaneo: null,
+      horaInicioEscaneo: null,
+      horaCompletado: null,
+      horaDocumentado: null,
+      horaEmbarcado: null,
+      usuarioDocumenta: null,
+      usuarioEmbarca: null
+    };
+
+    // Limpiar historial si es muy largo
+    if (historialMovimientos.length > 100) {
+      historialMovimientos = historialMovimientos.slice(0, 100);
+    }
+
+    // Guardar historial a archivo
+    try {
+      fs.writeFileSync(HISTORIAL_PATH, JSON.stringify(historialCiclos, null, 2));
+    } catch(e) { 
+      console.error('Error guardando historial de vaciado:', e); 
+    }
+
+    console.log(`🗑️ ANDÉN ${andenId} VACIADO por ${req.user.usuario} - ${palletsActivos.length} pallet(s) - Razón: ${razon.trim()}`);
+
+    res.json({ 
+      success: true, 
+      message: `Andén ${andenId} vaciado exitosamente`,
+      palletsMovidos: palletsActivos.length,
+      cicloId: cicloVaciado.id,
+      razon: razon.trim()
+    });
+
+  } catch (error) {
+    console.error('Error vaciando andén:', error);
+    res.status(500).json({ error: 'Error interno del servidor al vaciar el andén' });
+  }
+});
+
+// Endpoint para obtener TODOS los ciclos completados - Solo para usuario "admin"
+app.get('/api/admin/ciclos-completados', autenticarJWT, (req, res) => {
+  try {
+    // Verificar que el usuario sea específicamente "admin"
+    if (req.user.usuario !== 'admin') {
+      return res.status(403).json({ 
+        error: 'Acceso denegado. Solo el usuario "admin" puede ver todos los ciclos completados.' 
+      });
+    }
+
+    // Ordenar por fecha más reciente primero
+    const ciclosOrdenados = historialCiclos.sort((a, b) => {
+      const fechaA = a.horaEmbarcado || a.horaVaciado || a.horaCompletado || 0;
+      const fechaB = b.horaEmbarcado || b.horaVaciado || b.horaCompletado || 0;
+      return fechaB - fechaA;
+    });
+
+    // Agregar información adicional útil para la auditoría
+    const ciclosConInfo = ciclosOrdenados.map(ciclo => ({
+      ...ciclo,
+      cantidadPallets: ciclo.pallets ? ciclo.pallets.filter(p => p && p.numero).length : 0,
+      tipoCompletado: ciclo.tipoOperacion === 'VACIADO_ADMIN' ? 'Vaciado Admin' : 'Embarque Normal',
+      fechaCompletado: ciclo.horaEmbarcado || ciclo.horaVaciado || ciclo.horaCompletado,
+      usuarioFinal: ciclo.usuarioVacia || ciclo.usuarioEmbarca || ciclo.usuarioDocumenta || 'Sistema'
+    }));
+
+    console.log(`📊 Admin solicitó ${ciclosConInfo.length} ciclos completados`);
+
+    res.json({ 
+      ciclos: ciclosConInfo,
+      total: ciclosConInfo.length,
+      mensaje: `${ciclosConInfo.length} andenes completados encontrados`
+    });
+
+  } catch (error) {
+    console.error('Error obteniendo ciclos completados:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // Endpoint para consultar historial completo de ciclos por andén
 app.get('/api/andenes/:id/historial', (req, res) => {
   const andenId = Number(req.params.id);
   const historial = historialCiclos.filter(c => c.id === andenId);
   res.json({ historial });
+});
+
+// Endpoint para obtener TODOS los movimientos/escaneos de un andén específico - Solo para admin
+app.get('/api/admin/andenes/:id/movimientos-completos', autenticarJWT, (req, res) => {
+  try {
+    // Verificar que el usuario sea específicamente "admin"
+    if (req.user.usuario !== 'admin') {
+      return res.status(403).json({ 
+        error: 'Acceso denegado. Solo el usuario "admin" puede ver movimientos completos.' 
+      });
+    }
+
+    const andenId = Number(req.params.id);
+    
+    // Obtener TODOS los movimientos de este andén (sin límite de cantidad)
+    const movimientosAnden = historialMovimientos.filter(mov => mov.anden === andenId);
+    
+    // Ordenar por timestamp más reciente primero
+    const movimientosOrdenados = movimientosAnden.sort((a, b) => b.timestamp - a.timestamp);
+    
+    // Obtener también los ciclos completados de este andén para contexto
+    const ciclosAnden = historialCiclos.filter(c => c.id === andenId);
+    
+    console.log(`🔍 Admin solicitó movimientos completos del Andén ${andenId}: ${movimientosOrdenados.length} registros`);
+
+    res.json({ 
+      anden: andenId,
+      movimientos: movimientosOrdenados,
+      ciclosCompletados: ciclosAnden,
+      totalMovimientos: movimientosOrdenados.length,
+      totalCiclos: ciclosAnden.length,
+      mensaje: `${movimientosOrdenados.length} movimientos encontrados para Andén ${andenId}`
+    });
+
+  } catch (error) {
+    console.error('Error obteniendo movimientos completos:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
 });
 
 // Endpoint para reportes y estadísticas
@@ -1538,24 +1744,56 @@ app.delete('/api/andenes/:andenId/pallets/:palletId', autenticarJWT, (req, res) 
     
     const anden = andenes[andenIndex];
     
-    // Encontrar el pallet por numeroParte (ya que el frontend envía el numeroParte como palletId)
-    const palletIndex = anden.pallets.findIndex(p => p.numeroParte === palletId || p.id === palletId);
+    // CORRECIÓN: Ordenar pallets por timestamp para LIFO real (cronológico)
+    const palletsOrdenados = anden.pallets
+      .filter(p => p && (p.numeroParte || p.id)) // Filtrar pallets válidos
+      .sort((a, b) => {
+        const timestampA = a.timestamp || a.fechaEscaneo || 0;
+        const timestampB = b.timestamp || b.fechaEscaneo || 0;
+        return timestampA - timestampB; // Orden ascendente: más antiguo al más nuevo
+      });
+    
+    // El último pallet cronológicamente (más recientemente escaneado)
+    const ultimoPalletCronologico = palletsOrdenados[palletsOrdenados.length - 1];
+    
+    // Debug logs para diagnóstico
+    console.log('🔍 DEBUG eliminación pallet backend:');
+    console.log('  Pallet solicitado:', palletId);
+    console.log('  Último cronológico:', ultimoPalletCronologico?.numeroParte || ultimoPalletCronologico?.id);
+    console.log('  Pallets ordenados:', palletsOrdenados.map(p => ({
+      numero: p.numeroParte || p.id, 
+      timestamp: p.timestamp || p.fechaEscaneo
+    })));
+    
+    // Encontrar el pallet solicitado en el array original
+    const palletIndex = anden.pallets.findIndex(p => 
+      p.numeroParte === palletId || p.id === palletId || p.numero === palletId
+    );
+    
     if (palletIndex === -1) {
       return res.status(404).json({ error: 'Pallet no encontrado en este andén' });
     }
     
-    const palletRemovido = anden.pallets[palletIndex];
+    const palletSolicitado = anden.pallets[palletIndex];
     
-    // Verificar que es el último pallet (LIFO - Last In, First Out)
-    const ultimoPalletIndex = anden.pallets.length - 1;
-    if (palletIndex !== ultimoPalletIndex) {
+    // VALIDACIÓN LIFO: Solo permitir eliminar el último pallet cronológicamente
+    const esUltimoCronologico = (palletSolicitado.numeroParte || palletSolicitado.id || palletSolicitado.numero) 
+      === (ultimoPalletCronologico?.numeroParte || ultimoPalletCronologico?.id || ultimoPalletCronologico?.numero);
+    
+    if (!esUltimoCronologico) {
+      console.log('❌ Error LIFO - No es el último cronológico');
+      console.log('❌ Esperado:', ultimoPalletCronologico?.numeroParte || ultimoPalletCronologico?.id);
+      console.log('❌ Recibido:', palletSolicitado.numeroParte || palletSolicitado.id);
+      
       return res.status(400).json({ 
-        error: 'Solo se puede remover el último pallet escaneado (LIFO)', 
-        info: 'El último pallet debe ser removido primero' 
+        error: 'Este no es el ultimo pallet', 
+        info: 'Solo se puede remover el último pallet escaneado (LIFO cronológico)',
+        ultimoPallet: ultimoPalletCronologico?.numeroParte || ultimoPalletCronologico?.id
       });
     }
     
     // Remover el pallet
+    const palletRemovido = andenes[andenIndex].pallets[palletIndex];
     andenes[andenIndex].pallets.splice(palletIndex, 1);
     andenes[andenIndex].cantidad = andenes[andenIndex].pallets.length;
     
