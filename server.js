@@ -84,16 +84,40 @@ function guardarHistorialCiclos() {
 
 function cargarDatos() {
   try {
-    // Cargar andenes
-    if (fs.existsSync(ANDENES_PATH)) {
-      const andenesData = JSON.parse(fs.readFileSync(ANDENES_PATH, 'utf8'));
-      if (andenesData.andenes && Array.isArray(andenesData.andenes)) {
-        andenes = andenesData.andenes;
-        console.log(`📂 Andenes cargados: ${andenes.length} andenes`);
+    // 📊 CARGAR DESDE TU ARCHIVO EXISTENTE reportesCompletos.json
+    if (fs.existsSync(REPORTES_PATH)) {
+      const reporteCompleto = JSON.parse(fs.readFileSync(REPORTES_PATH, 'utf8'));
+      
+      // Cargar andenes existentes
+      if (reporteCompleto.andenes && Array.isArray(reporteCompleto.andenes)) {
+        andenes = reporteCompleto.andenes;
+        console.log(`📊 [REPORTE] Andenes cargados: ${andenes.length} andenes`);
       }
+      
+      // Cargar movimientos existentes
+      if (reporteCompleto.movimientos && Array.isArray(reporteCompleto.movimientos)) {
+        historialMovimientos = reporteCompleto.movimientos;
+        console.log(`📊 [REPORTE] Movimientos cargados: ${historialMovimientos.length} registros`);
+      }
+      
+      // Cargar escaneos existentes
+      if (reporteCompleto.escaneos && typeof reporteCompleto.escaneos === 'object') {
+        historialEscaneos = reporteCompleto.escaneos;
+        console.log(`📊 [REPORTE] Escaneos cargados: ${Object.keys(historialEscaneos).length} andenes`);
+      }
+      
+      // Cargar ciclos completados existentes (si existen)
+      if (reporteCompleto.ciclosHistorial && Array.isArray(reporteCompleto.ciclosHistorial)) {
+        historialCiclos = reporteCompleto.ciclosHistorial;
+        console.log(`📊 [REPORTE] Ciclos completados cargados: ${historialCiclos.length} ciclos`);
+      }
+      
+      console.log('✅ DATOS CARGADOS CORRECTAMENTE desde reportesCompletos.json');
+      return;
     }
     
-    // Cargar historial de movimientos
+    // Si no existe reportesCompletos.json, usar archivos separados como fallback
+    console.log('⚠️ reportesCompletos.json no encontrado, usando archivos separados como fallback...');
     if (fs.existsSync(HISTORIAL_MOVIMIENTOS_PATH)) {
       const movimientosData = JSON.parse(fs.readFileSync(HISTORIAL_MOVIMIENTOS_PATH, 'utf8'));
       if (movimientosData.movimientos && Array.isArray(movimientosData.movimientos)) {
