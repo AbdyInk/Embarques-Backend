@@ -491,6 +491,62 @@ let historialEscaneos = USE_DEV_DATA ? {
   ]
 } : {}; // En modo producción, historial completamente vacío
 
+// 🛡️ SISTEMA DE THROTTLING ANTI-RACE CONDITION
+// Trackear último timestamp por andén para prevenir envíos duplicados
+let andenThrottling = new Map(); // { andenId: { lastTimestamp, processCount } }
+const THROTTLING_DELAY = 10000; // 10 segundos mínimo entre escaneos al mismo andén
+
+// Función para validar throttling por andén
+function validarThrottlingAnden(andenId, requestId = null) {
+  const now = Date.now();
+  const key = `anden_${andenId}`;
+  
+  if (!andenThrottling.has(key)) {
+    // Primer escaneo a este andén
+    andenThrottling.set(key, { 
+      lastTimestamp: now, 
+      processCount: 1,
+      requestId: requestId || `req_${now}`
+    });
+    console.log(`🔓 [Throttling] Primer escaneo a Andén ${andenId} permitido`);
+    return { permitido: true, razon: 'primer_escaneo' };
+  }
+  
+  const andenData = andenThrottling.get(key);
+  const tiempoTranscurrido = now - andenData.lastTimestamp;
+  
+  if (tiempoTranscurrido < THROTTLING_DELAY) {
+    // Race condition detectado - rechazar
+    const tiempoRestante = Math.ceil((THROTTLING_DELAY - tiempoTranscurrido) / 1000);
+    console.log(`🚫 [Throttling] Andén ${andenId} RECHAZADO - Solo pasaron ${Math.ceil(tiempoTranscurrido/1000)}s, necesita ${Math.ceil(THROTTLING_DELAY/1000)}s`);
+    console.log(`   💡 Último escaneo: ${new Date(andenData.lastTimestamp).toLocaleTimeString()}`);
+    console.log(`   ⏰ Tiempo restante: ${tiempoRestante}s`);
+    return { 
+      permitido: false, 
+      razon: 'throttling_activo', 
+      tiempoRestante,
+      ultimoEscaneo: andenData.lastTimestamp
+    };
+  }
+  
+  // Tiempo suficiente transcurrido - actualizar y permitir
+  andenData.lastTimestamp = now;
+  andenData.processCount++;
+  andenData.requestId = requestId || `req_${now}`;
+  
+  console.log(`✅ [Throttling] Andén ${andenId} PERMITIDO - Transcurrieron ${Math.ceil(tiempoTranscurrido/1000)}s (${andenData.processCount} escaneos total)`);
+  return { permitido: true, razon: 'tiempo_suficiente' };
+}
+
+// Función para limpiar throttling (para casos especiales como RESET)
+function limpiarThrottlingAnden(andenId) {
+  const key = `anden_${andenId}`;
+  if (andenThrottling.has(key)) {
+    andenThrottling.delete(key);
+    console.log(`🧹 [Throttling] Limpiado throttling para Andén ${andenId}`);
+  }
+}
+
 // Historial global de movimientos (escaneos y cambios de status)
 let historialMovimientos = USE_DEV_DATA ? [
   // 7 escaneos
@@ -1136,17 +1192,9 @@ app.post('/api/tcp', (req, res) => {
     return res.status(400).json({ error: 'Código vacío' });
   }
   
-  // Crear el pallet
-  let pallet = {
-    id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
-    ubicacion: 'A1',
-    numeroParte: codigo,
-    codigoPallet: codigo,
-    numeroCajas: cajas,
-    timestamp: Date.now()
-  };
-  
+  // 🎯 DETERMINAR ANDÉN TARGET PRIMERO
   let targetIndex = -1;
+  let finalAndenTarget = andenTarget;
   
   // Si viene andén específico, usarlo; si no, buscar automáticamente
   if (andenTarget && andenTarget >= 1 && andenTarget <= 6) {
@@ -1156,7 +1204,8 @@ app.post('/api/tcp', (req, res) => {
     // Buscar el primer andén disponible (comportamiento anterior)
     targetIndex = andenes.findIndex(a => a.status !== 'Completado' && a.status !== 'Limite ya alcanzado');
     if (targetIndex !== -1) {
-      console.log(`Usando andén automático: ${targetIndex + 1}`);
+      finalAndenTarget = targetIndex + 1; // Convertir índice a número de andén
+      console.log(`Usando andén automático: ${finalAndenTarget}`);
     }
   }
   
@@ -1164,29 +1213,61 @@ app.post('/api/tcp', (req, res) => {
     return res.status(400).json({ error: 'No hay andenes disponibles o andén inválido' });
   }
   
+  // 🛡️ VALIDACIÓN CRÍTICA DE THROTTLING ANTI-RACE CONDITION
+  const requestId = `tcp_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+  const throttlingResult = validarThrottlingAnden(finalAndenTarget, requestId);
+  
+  if (!throttlingResult.permitido) {
+    console.log(`🚫 [TCP] Pallet "${codigo}" RECHAZADO por throttling en Andén ${finalAndenTarget}`);
+    console.log(`   ⏰ Razón: ${throttlingResult.razon}`);
+    console.log(`   🕐 Último escaneo: ${new Date(throttlingResult.ultimoEscaneo).toLocaleString('es-MX')}`);
+    
+    return res.status(429).json({ 
+      error: `Andén ${finalAndenTarget} ocupado - espere ${throttlingResult.tiempoRestante} segundos`,
+      codigo: 'THROTTLING_ACTIVO',
+      anden: finalAndenTarget,
+      tiempoRestante: throttlingResult.tiempoRestante,
+      ultimoEscaneo: throttlingResult.ultimoEscaneo,
+      mensaje: 'Es imposible procesar otro pallet en menos de 10 segundos al mismo andén'
+    });
+  }
+  
+  console.log(`✅ [TCP] Pallet "${codigo}" ACEPTADO para Andén ${finalAndenTarget} [${requestId}]`);
+  
+  // Crear el pallet
+  let pallet = {
+    id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
+    ubicacion: `A${finalAndenTarget}`,
+    numeroParte: codigo,
+    codigoPallet: codigo,
+    numeroCajas: cajas,
+    timestamp: Date.now(),
+    requestId: requestId  // Para debugging
+  };
+  
   // Verificar límite del andén (usar limiteCamion específico del andén)
   const limiteAnden = andenes[targetIndex].limiteCamion || 30; // Fallback a 30 si no está definido
   if (andenes[targetIndex].cantidad >= limiteAnden) {
     return res.status(400).json({ 
-      error: `Andén ${targetIndex + 1} ha alcanzado el límite de ${limiteAnden} pallets` 
+      error: `Andén ${finalAndenTarget} ha alcanzado el límite de ${limiteAnden} pallets` 
     });
   }
   
   // Agregar pallet al andén
-  pallet.ubicacion = `A${andenTarget || (targetIndex + 1)}`; // Usar número de andén correcto
   andenes[targetIndex].pallets.push(pallet);
   andenes[targetIndex].cantidad = andenes[targetIndex].pallets.length;
   andenes[targetIndex].ultimaFechaEscaneo = pallet.timestamp;
   
   // Actualizar historial
-  const andenId = andenTarget || andenes[targetIndex].id;
+  const andenId = finalAndenTarget;
   if (!historialEscaneos[andenId]) historialEscaneos[andenId] = [];
   historialEscaneos[andenId].unshift({ 
     id: pallet.id, 
     ubicacion: pallet.ubicacion, 
     numeroParte: pallet.numeroParte, 
     codigoPallet: pallet.codigoPallet, 
-    timestamp: pallet.timestamp 
+    timestamp: pallet.timestamp,
+    requestId: requestId
   });
   
   if (historialEscaneos[andenId].length > 30) {
@@ -1202,36 +1283,38 @@ app.post('/api/tcp', (req, res) => {
     andenes[targetIndex].status = 'En espera';
   }
   
-  // Obtener número de andén para logs
-  const andenNumero = andenTarget || (targetIndex + 1);
-  
-  // Agregar al historial de movimientos con información de cajas
+  // Agregar al historial de movimientos con información de cajas y requestId
   const infoMessage = cajas > 0 
-    ? `Escaneo TCP registrado en Andén ${andenNumero} con ${cajas} cajas`
-    : `Escaneo TCP registrado en Andén ${andenNumero}`;
+    ? `Escaneo TCP registrado en Andén ${finalAndenTarget} con ${cajas} cajas [${requestId}]`
+    : `Escaneo TCP registrado en Andén ${finalAndenTarget} [${requestId}]`;
     
   historialMovimientos.unshift({
     fechaHora: pallet.timestamp,
-    anden: andenNumero,
+    anden: finalAndenTarget,
     tipo: 'escaneo',
     codigo: pallet.codigoPallet,
     usuario: 'Escaneo',
-    info: infoMessage
+    info: infoMessage,
+    requestId: requestId  // Para debugging de throttling
   });
   if (historialMovimientos.length > 100) historialMovimientos = historialMovimientos.slice(0, 100);
   
-  console.log(`✅ Pallet integrado en Andén ${andenNumero}:`, pallet);
+  console.log(`✅ [TCP] Pallet "${codigo}" procesado exitosamente en Andén ${finalAndenTarget} [${requestId}]`);
+  console.log(`   📊 Total pallets en andén: ${andenes[targetIndex].cantidad}/${limiteAnden}`);
+  console.log(`   🧾 Pallet ID: ${pallet.id}`);
   
   // Guardar datos después del escaneo TCP
   guardarDatos();
   
   return res.json({ 
     success: true, 
-    info: 'TCP registrado con andén específico', 
-    anden: andenNumero, 
+    info: 'TCP registrado con protección anti-race condition', 
+    anden: finalAndenTarget, 
     cajas: cajas,
     pallet,
-    metodo: andenTarget ? 'específico' : 'automático'
+    metodo: andenTarget ? 'específico' : 'automático',
+    requestId: requestId,
+    throttlingInfo: 'Validación de 10s aplicada correctamente'
   });
 });
 
@@ -1537,6 +1620,10 @@ app.post('/api/andenes/:id/vaciar', autenticarJWT, (req, res) => {
       usuarioEmbarca: null
     };
 
+    // 🧹 LIMPIAR THROTTLING DEL ANDÉN VACIADO
+    limpiarThrottlingAnden(andenId);
+    console.log(`🔓 [Throttling] Limpiado para Andén ${andenId} después de vaciado por admin`);
+
     // Limpiar historial si es muy largo
     if (historialMovimientos.length > 100) {
       historialMovimientos = historialMovimientos.slice(0, 100);
@@ -1610,6 +1697,170 @@ app.get('/api/andenes/:id/historial', (req, res) => {
   const andenId = Number(req.params.id);
   const historial = historialCiclos.filter(c => c.id === andenId);
   res.json({ historial });
+});
+
+// 🛡️ ENDPOINTS DE ADMINISTRACIÓN PARA THROTTLING
+
+// Endpoint para ver estado del throttling - Solo para usuario "admin"
+app.get('/api/admin/throttling/status', autenticarJWT, (req, res) => {
+  try {
+    // Verificar que el usuario sea específicamente "admin"
+    if (req.user.usuario !== 'admin') {
+      return res.status(403).json({ 
+        error: 'Acceso denegado. Solo el usuario "admin" puede ver el estado del throttling.' 
+      });
+    }
+
+    const ahora = Date.now();
+    const estadoThrottling = {};
+    
+    // Convertir Map a objeto para respuesta
+    for (const [key, data] of andenThrottling.entries()) {
+      const andenId = key.replace('anden_', '');
+      const tiempoRestante = Math.max(0, THROTTLING_DELAY - (ahora - data.lastTimestamp));
+      const bloqueado = tiempoRestante > 0;
+      
+      estadoThrottling[andenId] = {
+        bloqueado: bloqueado,
+        ultimoEscaneo: new Date(data.lastTimestamp).toLocaleString('es-MX'),
+        tiempoRestante: bloqueado ? Math.ceil(tiempoRestante / 1000) : 0,
+        procesosTotal: data.processCount,
+        requestId: data.requestId
+      };
+    }
+
+    res.json({
+      throttlingActivo: andenThrottling.size > 0,
+      delaySegundos: THROTTLING_DELAY / 1000,
+      andenes: estadoThrottling,
+      timestamp: new Date().toLocaleString('es-MX')
+    });
+
+  } catch (error) {
+    console.error('Error consultando estado del throttling:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Endpoint para limpiar throttling de un andén específico - Solo para usuario "admin"
+app.post('/api/admin/throttling/:andenId/limpiar', autenticarJWT, (req, res) => {
+  try {
+    // Verificar que el usuario sea específicamente "admin"
+    if (req.user.usuario !== 'admin') {
+      return res.status(403).json({ 
+        error: 'Acceso denegado. Solo el usuario "admin" puede limpiar throttling.' 
+      });
+    }
+
+    const andenId = parseInt(req.params.andenId);
+    const { razon } = req.body;
+    
+    if (!andenId || andenId < 1 || andenId > 6) {
+      return res.status(400).json({ error: 'ID de andén inválido (debe ser 1-6)' });
+    }
+
+    if (!razon || !razon.trim()) {
+      return res.status(400).json({ error: 'La razón es obligatoria para limpiar throttling' });
+    }
+
+    const key = `anden_${andenId}`;
+    const existia = andenThrottling.has(key);
+    
+    if (existia) {
+      const dataAnterior = andenThrottling.get(key);
+      limpiarThrottlingAnden(andenId);
+      
+      // Registrar la acción en el historial
+      historialMovimientos.unshift({
+        fechaHora: Date.now(),
+        anden: andenId,
+        tipo: 'throttling_limpiado',
+        codigo: `Throttling-${andenId}`,
+        usuario: req.user.usuario,
+        info: `Throttling limpiado manualmente por admin - Razón: ${razon.trim()}`,
+        razon: razon.trim(),
+        procesosAnteriores: dataAnterior.processCount
+      });
+
+      console.log(`🧹 [Admin] Throttling de Andén ${andenId} limpiado por ${req.user.usuario} - Razón: ${razon.trim()}`);
+      
+      res.json({
+        success: true,
+        mensaje: `Throttling del Andén ${andenId} limpiado exitosamente`,
+        razon: razon.trim(),
+        procesosAnteriores: dataAnterior.processCount
+      });
+    } else {
+      res.json({
+        success: true,
+        mensaje: `El Andén ${andenId} no tenía throttling activo`,
+        razon: razon.trim()
+      });
+    }
+
+  } catch (error) {
+    console.error('Error limpiando throttling:', error);
+    res.status(500).json({ error: 'Error interno del servidor al limpiar throttling' });
+  }
+});
+
+// Endpoint para limpiar TODO el throttling - Solo para usuario "admin"
+app.post('/api/admin/throttling/limpiar-todo', autenticarJWT, (req, res) => {
+  try {
+    // Verificar que el usuario sea específicamente "admin"
+    if (req.user.usuario !== 'admin') {
+      return res.status(403).json({ 
+        error: 'Acceso denegado. Solo el usuario "admin" puede limpiar todo el throttling.' 
+      });
+    }
+
+    const { razon } = req.body;
+    
+    if (!razon || !razon.trim()) {
+      return res.status(400).json({ error: 'La razón es obligatoria para limpiar todo el throttling' });
+    }
+
+    const andenesLimpiados = [];
+    let procesosTotal = 0;
+
+    // Limpiar todos los andenes y recolectar stats
+    for (const [key, data] of andenThrottling.entries()) {
+      const andenId = key.replace('anden_', '');
+      andenesLimpiados.push(parseInt(andenId));
+      procesosTotal += data.processCount;
+    }
+
+    // Limpiar todo
+    andenThrottling.clear();
+    console.log('🧹 [Admin] TODO el throttling limpiado');
+
+    // Registrar la acción en el historial
+    historialMovimientos.unshift({
+      fechaHora: Date.now(),
+      anden: 0, // 0 indica que fue para todos los andenes
+      tipo: 'throttling_limpiado_todo',
+      codigo: 'Throttling-Global',
+      usuario: req.user.usuario,
+      info: `TODO el throttling limpiado por admin - ${andenesLimpiados.length} andenes afectados - Razón: ${razon.trim()}`,
+      razon: razon.trim(),
+      andenesAfectados: andenesLimpiados,
+      procesosTotal: procesosTotal
+    });
+
+    console.log(`🧹 [Admin] TODO el throttling limpiado por ${req.user.usuario} - ${andenesLimpiados.length} andenes - Razón: ${razon.trim()}`);
+
+    res.json({
+      success: true,
+      mensaje: `Todo el throttling limpiado exitosamente`,
+      andenesAfectados: andenesLimpiados,
+      procesosTotal: procesosTotal,
+      razon: razon.trim()
+    });
+
+  } catch (error) {
+    console.error('Error limpiando todo el throttling:', error);
+    res.status(500).json({ error: 'Error interno del servidor al limpiar throttling' });
+  }
 });
 
 // Endpoint para obtener TODOS los movimientos/escaneos de un andén específico - Solo para admin
