@@ -56,14 +56,26 @@ function guardarDatos() {
         totalAndenes: andenes.length,
         andenesActivos: andenes.filter(a => a.cantidad > 0).length,
         totalPallets: andenes.reduce((sum, a) => sum + a.cantidad, 0),
-        totalMovimientos: historialMovimientos.length
+        totalMovimientos: historialMovimientos.length,
+        totalCiclosCompletados: historialCiclos.length
       },
       andenes: andenes,
       movimientos: historialMovimientos,
-      escaneos: historialEscaneos
+      escaneos: historialEscaneos,
+      ciclosHistorial: historialCiclos // ✅ AGREGAR HISTORIAL DE CICLOS
     };
     fs.writeFileSync(REPORTES_PATH, JSON.stringify(reporteCompleto, null, 2));
     
+// Función específica para guardar historial de ciclos
+function guardarHistorialCiclos() {
+  try {
+    fs.writeFileSync(HISTORIAL_PATH, JSON.stringify(historialCiclos, null, 2));
+    console.log(`📊 Historial de ciclos guardado: ${historialCiclos.length} ciclos`);
+  } catch (error) {
+    console.error('❌ Error guardando historial de ciclos:', error.message);
+  }
+}
+
     console.log(`💾 Datos guardados exitosamente: ${timestamp}`);
   } catch (error) {
     console.error('❌ Error guardando datos:', error.message);
@@ -107,9 +119,18 @@ function cargarDatos() {
 let historialCiclos = [];
 try {
   if (fs.existsSync(HISTORIAL_PATH)) {
-    historialCiclos = JSON.parse(fs.readFileSync(HISTORIAL_PATH, 'utf8'));
+    const data = fs.readFileSync(HISTORIAL_PATH, 'utf8');
+    historialCiclos = JSON.parse(data);
+    console.log(`📊 Cargados ${historialCiclos.length} ciclos completados del historial`);
+  } else {
+    // Crear archivo vacío si no existe
+    fs.writeFileSync(HISTORIAL_PATH, JSON.stringify([], null, 2));
+    console.log('📁 Creado archivo de historial de ciclos: ' + HISTORIAL_PATH);
   }
-} catch (e) { historialCiclos = []; }
+} catch (e) { 
+  console.error('Error cargando historial de ciclos:', e.message);
+  historialCiclos = [];
+}
 const express = require('express');
 const cors = require('cors');
 const app = express();
@@ -1487,9 +1508,9 @@ app.post('/api/andenes/:id/embarcar', (req, res) => {
     usuarioEmbarca: andenes[idx].usuarioEmbarca
   };
   historialCiclos.push(ciclo);
-  try {
-    fs.writeFileSync(HISTORIAL_PATH, JSON.stringify(historialCiclos, null, 2));
-  } catch(e) { console.error('Error guardando historial:', e); }
+  
+  // ✅ USAR FUNCIÓN DEDICADA PARA GUARDAR HISTORIAL
+  guardarHistorialCiclos();
   // Programar reset automático a 'Disponible' en 5 minutos después del embarque
   setTimeout(() => {
     andenes[idx].pallets = [];
@@ -1571,6 +1592,9 @@ app.post('/api/andenes/:id/vaciar', autenticarJWT, (req, res) => {
 
     // Agregar al historial de ciclos
     historialCiclos.push(cicloVaciado);
+    
+    // ✅ GUARDAR HISTORIAL AL DISCO INMEDIATAMENTE
+    guardarHistorialCiclos();
 
     // Crear movimientos individuales para cada pallet
     palletsActivos.forEach(pallet => {
@@ -1629,12 +1653,8 @@ app.post('/api/andenes/:id/vaciar', autenticarJWT, (req, res) => {
       historialMovimientos = historialMovimientos.slice(0, 100);
     }
 
-    // Guardar historial a archivo
-    try {
-      fs.writeFileSync(HISTORIAL_PATH, JSON.stringify(historialCiclos, null, 2));
-    } catch(e) { 
-      console.error('Error guardando historial de vaciado:', e); 
-    }
+    // ✅ GUARDAR TODOS LOS DATOS AL DISCO
+    guardarDatos();
 
     console.log(`🗑️ ANDÉN ${andenId} VACIADO por ${req.user.usuario} - ${palletsActivos.length} pallet(s) - Razón: ${razon.trim()}`);
 
